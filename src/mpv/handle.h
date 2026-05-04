@@ -65,6 +65,7 @@ public:
     void SetAudioSpdif(const std::string& codecs)    { SetOptionString("audio-spdif", codecs); }
     void SetAudioExclusive(bool v)                   { SetOptionFlag("audio-exclusive", v); }
     void SetAudioChannels(const std::string& layout)  { SetOptionString("audio-channels", layout); }
+    void SetAudioFilters(const std::string& filters)  { SetOptionString("af", filters); }
 
     // =====================================================================
     // Property access (synchronous - safe in main thread)

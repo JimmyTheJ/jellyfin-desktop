@@ -95,7 +95,8 @@
             audio: {
                 audioPassthrough: _savedSettings.audioPassthrough || '',
                 audioExclusive: _savedSettings.audioExclusive || false,
-                audioChannels: _savedSettings.audioChannels || ''
+                audioChannels: _savedSettings.audioChannels || '',
+                audioNormalization: _savedSettings.audioNormalization || ''
             },
             advanced: {
                 transparentTitlebar: _savedSettings.transparentTitlebar !== false,
@@ -114,6 +115,12 @@
                     { value: 'stereo', title: 'Stereo' },
                     { value: '5.1', title: '5.1 Surround' },
                     { value: '7.1', title: '7.1 Surround' }
+                ]},
+                { key: 'audioNormalization', displayName: 'Audio Normalization', help: 'Reduce the dynamic range of audio to keep dialogue audible during loud scenes (e.g. explosions in movies). Requires audio decoding — disables bitstream passthrough for normalized streams.', options: [
+                    { value: '', title: 'Off' },
+                    { value: 'lavfi=[dynaudnorm=f=500:p=0.95:m=10:s=5]', title: 'Light (Loudness Leveling)' },
+                    { value: 'lavfi=[dynaudnorm=f=250:p=0.95:m=15:s=3]', title: 'TV & Movies (Dynamic Range Compression)' },
+                    { value: 'lavfi=[dynaudnorm=f=150:p=0.95:m=20:s=2]', title: 'Night Mode (Maximum Compression)' }
                 ]}
             ],
             advanced: [

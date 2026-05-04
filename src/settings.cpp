@@ -67,6 +67,7 @@ bool Settings::load() {
     audio_passthrough_ = jsonStr(root, "audioPassthrough");
     audio_exclusive_ = jsonBool(root, "audioExclusive", false);
     audio_channels_ = jsonStr(root, "audioChannels");
+    audio_normalization_ = jsonStr(root, "audioNormalization");
     disable_gpu_compositing_ = jsonBool(root, "disableGpuCompositing", false);
     titlebar_theme_color_ = jsonBool(root, "titlebarThemeColor", true);
     transparent_titlebar_ = jsonBool(root, "transparentTitlebar", true);
@@ -102,6 +103,7 @@ static std::string buildSettingsJson(const Settings& s, bool pretty) {
     if (!s.audioPassthrough().empty()) cJSON_AddStringToObject(root, "audioPassthrough", s.audioPassthrough().c_str());
     if (s.audioExclusive()) cJSON_AddBoolToObject(root, "audioExclusive", true);
     if (!s.audioChannels().empty()) cJSON_AddStringToObject(root, "audioChannels", s.audioChannels().c_str());
+    if (!s.audioNormalization().empty()) cJSON_AddStringToObject(root, "audioNormalization", s.audioNormalization().c_str());
     if (s.disableGpuCompositing()) cJSON_AddBoolToObject(root, "disableGpuCompositing", true);
     if (!s.titlebarThemeColor()) cJSON_AddBoolToObject(root, "titlebarThemeColor", false);
     if (!s.transparentTitlebar()) cJSON_AddBoolToObject(root, "transparentTitlebar", false);
@@ -143,6 +145,7 @@ std::string Settings::cliSettingsJson() const {
     if (!audio_passthrough_.empty()) cJSON_AddStringToObject(root, "audioPassthrough", audio_passthrough_.c_str());
     if (audio_exclusive_) cJSON_AddBoolToObject(root, "audioExclusive", true);
     if (!audio_channels_.empty()) cJSON_AddStringToObject(root, "audioChannels", audio_channels_.c_str());
+    if (!audio_normalization_.empty()) cJSON_AddStringToObject(root, "audioNormalization", audio_normalization_.c_str());
     if (disable_gpu_compositing_) cJSON_AddBoolToObject(root, "disableGpuCompositing", true);
     if (!titlebar_theme_color_) cJSON_AddBoolToObject(root, "titlebarThemeColor", false);
     if (!transparent_titlebar_) cJSON_AddBoolToObject(root, "transparentTitlebar", false);
