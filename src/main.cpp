@@ -610,11 +610,6 @@ int main(int argc, char* argv[]) {
         g_mpv.SetAudioExclusive(true);
     if (!audio_channels_str.empty())
         g_mpv.SetAudioChannels(audio_channels_str);
-    {
-        const std::string& audio_norm = Settings::instance().audioNormalization();
-        if (!audio_norm.empty())
-            g_mpv.SetAudioFilters(audio_norm);
-    }
 
     // Register property observations before mpv_initialize. On macOS,
     // core_thread races to DispatchQueue.main.sync immediately after init

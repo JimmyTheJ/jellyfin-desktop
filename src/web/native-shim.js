@@ -116,11 +116,11 @@
                     { value: '5.1', title: '5.1 Surround' },
                     { value: '7.1', title: '7.1 Surround' }
                 ]},
-                { key: 'audioNormalization', displayName: 'Audio Normalization', help: 'Reduce the dynamic range of audio to keep dialogue audible during loud scenes (e.g. explosions in movies). Requires audio decoding — disables bitstream passthrough for normalized streams.', options: [
+                { key: 'audioNormalization', displayName: 'Audio Normalization', help: 'Normalize loudness so quiet scenes stay audible and loud scenes don\'t peak. When the server has analyzed a file\'s loudness, a precise static gain is applied automatically. Otherwise falls back to real-time normalization. Requires audio decoding — disables bitstream passthrough.', options: [
                     { value: '', title: 'Off' },
-                    { value: 'lavfi=[dynaudnorm=f=500:p=0.95:m=10:s=5]', title: 'Light (Loudness Leveling)' },
-                    { value: 'lavfi=[dynaudnorm=f=250:p=0.95:m=15:s=3]', title: 'TV & Movies (Dynamic Range Compression)' },
-                    { value: 'lavfi=[dynaudnorm=f=150:p=0.95:m=20:s=2]', title: 'Night Mode (Maximum Compression)' }
+                    { value: 'lavfi=[loudnorm=I=-18:TP=-1.5:LRA=20:linear=true]', title: 'Light (Loudness Leveling)' },
+                    { value: 'lavfi=[loudnorm=I=-18:TP=-1.5:LRA=11,acompressor=threshold=0.125:ratio=4:attack=300:release=1500:makeup=2]', title: 'TV & Movies (Dynamic Range Compression)' },
+                    { value: 'lavfi=[loudnorm=I=-18:TP=-1.5:LRA=11,acompressor=threshold=0.063:ratio=8:attack=200:release=1000:makeup=3.16]', title: 'Night Mode (Maximum Compression)' }
                 ]}
             ],
             advanced: [
