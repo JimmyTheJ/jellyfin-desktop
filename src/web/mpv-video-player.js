@@ -356,9 +356,9 @@
                 { id: 'fill',  name: this.globalize.translate('AspectRatioFill') }
             ];
         }
-        getAspectRatio() { return this.appSettings.aspectRatio() || 'auto'; }
+        getAspectRatio() { return this.appSettings.get('aspectRatio') || 'auto'; }
         setAspectRatio(value) {
-            this.appSettings.aspectRatio(value);
+            this.appSettings.set('aspectRatio', value);
             window.api.player.setAspectMode(value);
         }
     }
