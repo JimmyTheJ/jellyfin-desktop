@@ -230,6 +230,11 @@
         }
 
         stop(destroyPlayer) {
+            // While in mini-player mode, suppress navigation-triggered stops so mpv keeps playing.
+            // The stop button in the overlay calls window.api.player.stop() directly, bypassing this.
+            if (this._isMiniPlayer && !destroyPlayer) {
+                return Promise.resolve();
+            }
             if (!destroyPlayer && this._videoDialog && this._currentPlayOptions?.backdropUrl) {
                 const dlg = this._videoDialog;
                 const url = this._currentPlayOptions.backdropUrl;

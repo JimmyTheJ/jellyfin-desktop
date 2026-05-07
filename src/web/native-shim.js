@@ -351,6 +351,21 @@
     window._nativeEnterMiniPlayer = function() {
         if (document.getElementById('jmp-mini-player')) return;
         const PIP_W = 320, PIP_H = 180;
+
+        // Punch an alpha=0 hole in the CEF texture at the mini-player location so the mpv
+        // video beneath it shows through. mix-blend-mode:destination-out on a solid element
+        // sets destination pixels to alpha=0 (transparent) wherever this element covers them.
+        const hole = document.createElement('div');
+        hole.id = 'jmp-mini-hole';
+        hole.style.cssText = [
+            'position:fixed', 'right:0', 'bottom:0',
+            'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
+            'z-index:9999',
+            'background:rgba(0,0,0,1)',
+            'mix-blend-mode:destination-out',
+            'pointer-events:none'
+        ].join(';');
+
         const pip = document.createElement('div');
         pip.id = 'jmp-mini-player';
         pip.style.cssText = [
@@ -358,20 +373,21 @@
             'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
             'z-index:10000', 'background:transparent',
             'cursor:pointer', 'overflow:hidden',
-            'box-shadow:0 4px 24px rgba(0,0,0,0.8)',
-            'border-top:1px solid rgba(255,255,255,0.1)',
-            'border-left:1px solid rgba(255,255,255,0.1)'
+            'box-shadow:0 6px 28px rgba(0,0,0,0.9)',
+            'outline:1px solid rgba(255,255,255,0.35)',
+            'border-radius:4px'
         ].join(';');
 
         const controls = document.createElement('div');
         controls.style.cssText = [
-            'position:absolute', 'bottom:0', 'left:0', 'right:0', 'height:40px',
-            'background:linear-gradient(transparent,rgba(0,0,0,0.75))',
+            'position:absolute', 'bottom:0', 'left:0', 'right:0', 'height:44px',
+            'background:linear-gradient(transparent,rgba(0,0,0,0.85))',
             'display:flex', 'align-items:center', 'justify-content:space-between',
-            'padding:0 8px', 'opacity:0', 'transition:opacity 0.15s'
+            'padding:0 8px', 'opacity:0', 'transition:opacity 0.2s'
         ].join(';');
 
-        const btnCss = 'background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:2px 5px;line-height:1;';
+        const btnCss = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
+                       'padding:4px 6px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,0.9);';
         const pauseBtn = document.createElement('button');
         pauseBtn.id = 'jmp-mini-pause';
         pauseBtn.style.cssText = btnCss;
@@ -383,8 +399,8 @@
 
         const expandBtn = document.createElement('button');
         expandBtn.style.cssText = btnCss;
-        expandBtn.textContent = '\u26F6'; // ⛶ four-corners / expand
-        expandBtn.title = 'Expand';
+        expandBtn.textContent = '\u26F6'; // ⛶ expand
+        expandBtn.title = 'Restore';
 
         const stopBtn = document.createElement('button');
         stopBtn.style.cssText = btnCss;
@@ -423,7 +439,16 @@
         expandBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             window._nativeExitMiniPlayer();
-            window.history.back();
+            // Try to navigate back to the active player view
+            const player = window._mpvVideoPlayerInstance;
+            const router = player && player.appRouter;
+            if (router && typeof router.showVideoOsd === 'function') {
+                router.showVideoOsd();
+            } else if (router && typeof router.back === 'function') {
+                router.back();
+            } else {
+                window.history.back();
+            }
         });
 
         stopBtn.addEventListener('click', (e) => {
@@ -432,6 +457,7 @@
             window.api.player.stop();
         });
 
+        document.body.appendChild(hole);
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
 
@@ -441,11 +467,19 @@
 
     window._nativeExitMiniPlayer = function() {
         const pip = document.getElementById('jmp-mini-player');
-        if (!pip) return;
+        const hole = document.getElementById('jmp-mini-hole');
+        if (hole && hole.parentNode) hole.parentNode.removeChild(hole);
+        if (!pip) {
+            window._mpvMiniPlayerActive = false;
+            return;
+        }
         if (pip._onPaused) window.api.player.paused.disconnect(pip._onPaused);
         if (pip._onPlaying) window.api.player.playing.disconnect(pip._onPlaying);
         pip.parentNode.removeChild(pip);
         window._mpvMiniPlayerActive = false;
+        // Reset the flag on the player instance so the restored player works cleanly
+        const player = window._mpvVideoPlayerInstance;
+        if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
     };
 
