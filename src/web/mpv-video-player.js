@@ -284,6 +284,12 @@
         }
 
         createMediaElement(options) {
+            // If new media starts while the mini bar is active, close it first so
+            // the new video takes over in full-screen mode.
+            if (window._mpvMiniPlayerActive) {
+                window._nativeExitMiniPlayer();
+                this._isMiniPlayer = false;
+            }
             let dlg = document.querySelector('.videoPlayerContainer');
             if (!dlg) {
                 if (window.jmpNative) window.jmpNative.playerOsdActive(true);

@@ -345,136 +345,182 @@
         window.api.input.positionSeek(positionMs);
     };
 
-    // Mini player (picture-in-picture) overlay
+    // Mini player — Plex-style persistent bottom bar
     window._mpvMiniPlayerActive = false;
 
     window._nativeEnterMiniPlayer = function() {
-        if (document.getElementById('jmp-mini-player')) return;
-        const PIP_W = 320, PIP_H = 180, CTRL_H = 44, MARGIN = 8;
+        if (document.getElementById('jmp-mini-bar')) return;
 
-        // The pip div marks the video hole area. overflow:visible is critical:
-        // - lets the controls bar protrude above the pip rect (outside ClearView area)
-        // - avoids creating a scroll boundary that would trap mouse-wheel events
-        const pip = document.createElement('div');
-        pip.id = 'jmp-mini-player';
-        pip.style.cssText = [
-            'position:fixed',
-            'right:' + MARGIN + 'px', 'bottom:' + MARGIN + 'px',
-            'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
-            'z-index:10000',
-            'overflow:visible',
-            'background:transparent',
-            'border-radius:0 0 4px 4px',
-            'box-shadow:0 0 0 1px rgba(255,255,255,0.3),0 8px 32px rgba(0,0,0,0.85)',
-            'pointer-events:none'
+        const BAR_H = 90, VID_W = 160, VID_H = 90;
+
+        // --- Bar shell ---
+        const bar = document.createElement('div');
+        bar.id = 'jmp-mini-bar';
+        bar.style.cssText = [
+            'position:fixed', 'bottom:0', 'left:0', 'right:0', 'height:' + BAR_H + 'px',
+            'background:rgba(10,10,10,0.93)',
+            'border-top:1px solid rgba(255,255,255,0.10)',
+            'z-index:10000', 'display:flex', 'align-items:center',
+            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+            'box-sizing:border-box'
         ].join(';');
 
-        // Controls bar sits ABOVE the pip div (top:-CTRL_H) so it is outside the
-        // ClearView rect. ClearView only clears the pip box, leaving these buttons
-        // fully visible in the CEF texture.
+        // Progress bar — spans only the non-video portion of the bar so it isn't
+        // zeroed by ClearView (which only clears the leftmost VID_W columns).
+        const progressBg = document.createElement('div');
+        progressBg.style.cssText = 'position:absolute;top:0;left:' + VID_W + 'px;right:0;height:3px;' +
+            'background:rgba(255,255,255,0.15);overflow:hidden;cursor:pointer;z-index:1;';
+        const progressFill = document.createElement('div');
+        progressFill.style.cssText = 'height:100%;background:#00a4dc;width:0%;pointer-events:none;' +
+            'transition:width 0.8s linear;';
+        progressBg.appendChild(progressFill);
+        bar.appendChild(progressBg);
+
+        // Seek on click
+        progressBg.addEventListener('click', (e) => {
+            const rect = progressBg.getBoundingClientRect();
+            const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const dur = bar._duration || 0;
+            if (dur > 0) window.api.input.positionSeek(fraction * dur);
+        });
+
+        // --- Live video hole (transparent; mpv renders here) ---
+        const videoArea = document.createElement('div');
+        videoArea.style.cssText = 'width:' + VID_W + 'px;height:' + VID_H + 'px;flex-shrink:0;' +
+            'background:transparent;cursor:pointer;';
+        videoArea.title = 'Click to restore player';
+        bar.appendChild(videoArea);
+
+        // --- Info (title + time) ---
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;padding:0 16px;overflow:hidden;min-width:0;';
+
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'color:#fff;font-size:13px;font-weight:600;white-space:nowrap;' +
+            'overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;';
+        titleEl.textContent = 'Playing';
+
+        const subtitleEl = document.createElement('div');
+        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.55);font-size:11px;white-space:nowrap;' +
+            'overflow:hidden;text-overflow:ellipsis;';
+        subtitleEl.textContent = '';
+
+        info.appendChild(titleEl);
+        info.appendChild(subtitleEl);
+        bar.appendChild(info);
+
+        // Populate title from Jellyfin's playbackManager if available
+        try {
+            const pm = window.playbackManager;
+            if (pm) {
+                const pl = typeof pm.currentPlayer === 'function' ? pm.currentPlayer() : null;
+                const item = pl && typeof pm.currentItem === 'function' ? pm.currentItem(pl) : null;
+                if (item) {
+                    titleEl.textContent = item.SeriesName || item.Name || 'Playing';
+                    if (item.SeriesName) subtitleEl.textContent = item.Name || '';
+                }
+            }
+        } catch (_) {}
+
+        // --- Controls ---
         const controls = document.createElement('div');
-        controls.style.cssText = [
-            'position:absolute',
-            'top:-' + CTRL_H + 'px', 'left:0', 'right:0', 'height:' + CTRL_H + 'px',
-            'background:rgba(0,0,0,0.85)',
-            'border-radius:4px 4px 0 0',
-            'box-shadow:0 0 0 1px rgba(255,255,255,0.3)',
-            'display:flex', 'align-items:center', 'justify-content:space-between',
-            'padding:0 8px',
-            'opacity:0', 'transition:opacity 0.2s',
-            'pointer-events:auto'
-        ].join(';');
+        controls.style.cssText = 'display:flex;align-items:center;gap:0;padding:0 12px;flex-shrink:0;';
 
         const btnCss = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
-                       'padding:4px 8px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,0.9);';
-        const pauseBtn = document.createElement('button');
-        pauseBtn.id = 'jmp-mini-pause';
-        pauseBtn.style.cssText = btnCss;
-        pauseBtn.setAttribute('tabindex', '-1');
-        pauseBtn.textContent = playerState.paused ? '\u25B6' : '\u23F8'; // ▶ or ⏸
-        pauseBtn.title = 'Pause/Play';
-
-        const right = document.createElement('div');
-        right.style.display = 'flex';
-
-        const expandBtn = document.createElement('button');
-        expandBtn.style.cssText = btnCss;
-        expandBtn.setAttribute('tabindex', '-1');
-        expandBtn.textContent = '\u26F6'; // ⛶ expand
-        expandBtn.title = 'Restore';
-
-        const stopBtn = document.createElement('button');
-        stopBtn.style.cssText = btnCss;
-        stopBtn.setAttribute('tabindex', '-1');
-        stopBtn.textContent = '\u2715'; // ✕
-        stopBtn.title = 'Stop';
-
-        right.appendChild(expandBtn);
-        right.appendChild(stopBtn);
-        controls.appendChild(pauseBtn);
-        controls.appendChild(right);
-
-        pip.appendChild(controls);
-        // No pointer-capturing fill — the video area has no child with pointer-events:auto.
-        // Native wheel events (and key events) pass directly through pip to whatever page
-        // element is underneath, so the home page scrolls freely while PiP is active.
-
-        // Show/hide controls by tracking pointer position via a document-level pointermove.
-        // This works even though the video area has no pointer-capturing element.
-        let hideTimer = null;
-        const showControls = () => { clearTimeout(hideTimer); controls.style.opacity = '1'; };
-        const scheduleHide = () => { hideTimer = setTimeout(() => { controls.style.opacity = '0'; }, 400); };
-
-        const onDocPointerMove = (e) => {
-            const pr = pip.getBoundingClientRect();
-            const cr = controls.getBoundingClientRect();
-            const inPip  = e.clientX >= pr.left && e.clientX <= pr.right &&
-                            e.clientY >= pr.top  && e.clientY <= pr.bottom;
-            const inCtrl = e.clientX >= cr.left && e.clientX <= cr.right &&
-                            e.clientY >= cr.top  && e.clientY <= cr.bottom;
-            if (inPip || inCtrl) showControls();
-            else scheduleHide();
+            'padding:6px 9px;border-radius:4px;line-height:1;opacity:0.8;transition:opacity 0.1s,' +
+            'background 0.1s;';
+        const mkBtn = (icon, title) => {
+            const b = document.createElement('button');
+            b.style.cssText = btnCss;
+            b.textContent = icon;
+            b.title = title;
+            b.setAttribute('tabindex', '-1');
+            b.addEventListener('mouseenter', () => { b.style.opacity = '1'; b.style.background = 'rgba(255,255,255,0.1)'; });
+            b.addEventListener('mouseleave', () => { b.style.opacity = '0.8'; b.style.background = 'none'; });
+            return b;
         };
-        document.addEventListener('pointermove', onDocPointerMove);
-        pip._onDocPointerMove = onDocPointerMove;
 
-        controls.addEventListener('mouseenter', showControls);
-        controls.addEventListener('mouseleave', scheduleHide);
+        const pauseBtn = mkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        pauseBtn.id = 'jmp-mini-pause';
+        pauseBtn.style.fontSize = '22px';
 
+        const expandBtn = mkBtn('\u26F6', 'Restore full player'); // ⛶
+        const stopBtn   = mkBtn('\u2715', 'Stop playback');       // ✕
+
+        // Volume: icon + range slider
+        const volWrap = document.createElement('div');
+        volWrap.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px;';
+        const volIcon = document.createElement('span');
+        volIcon.style.cssText = 'color:rgba(255,255,255,0.7);font-size:15px;cursor:default;';
+        volIcon.textContent = '\uD83D\uDD0A'; // 🔊
+        const volSlider = document.createElement('input');
+        volSlider.type = 'range';
+        volSlider.min = '0'; volSlider.max = '100';
+        volSlider.style.cssText = 'width:64px;height:3px;cursor:pointer;accent-color:#00a4dc;' +
+            'outline:none;border:none;background:rgba(255,255,255,0.2);border-radius:2px;';
+        volSlider.value = String(Math.round((window.api.player.volume || 100)));
+        volWrap.appendChild(volIcon);
+        volWrap.appendChild(volSlider);
+
+        controls.appendChild(pauseBtn);
+        controls.appendChild(volWrap);
+        controls.appendChild(expandBtn);
+        controls.appendChild(stopBtn);
+        bar.appendChild(controls);
+
+        // --- Signal connections ---
+        const onPaused  = () => { const b = document.getElementById('jmp-mini-pause'); if (b) b.textContent = '\u25B6'; };
+        const onPlaying = () => { const b = document.getElementById('jmp-mini-pause'); if (b) b.textContent = '\u23F8'; };
+        window.api.player.paused.connect(onPaused);
+        window.api.player.playing.connect(onPlaying);
+        bar._onPaused  = onPaused;
+        bar._onPlaying = onPlaying;
+
+        // Progress + time updates
+        const fmtTime = (ms) => {
+            const s = Math.floor(ms / 1000);
+            const m = Math.floor(s / 60), sec = s % 60;
+            return m + ':' + String(sec).padStart(2, '0');
+        };
+        const onTimePos = (posMs) => {
+            const durMs = bar._duration || 0;
+            if (durMs > 0) {
+                progressFill.style.width = Math.min(100, (posMs / durMs) * 100) + '%';
+                const episode = subtitleEl._episode || '';
+                subtitleEl.textContent = (episode ? episode + '   ' : '') + fmtTime(posMs) + ' / ' + fmtTime(durMs);
+            }
+        };
+        const onDuration = (durMs) => { bar._duration = durMs; };
+        window.api.player.positionUpdate.connect(onTimePos);
+        window.api.player.updateDuration.connect(onDuration);
+        bar._onTimePos  = onTimePos;
+        bar._onDuration = onDuration;
+
+        // Seed duration from current playerState if already known
+        bar._duration = playerState.duration;
+
+        // Volume slider (no live signal — seed from playerState, update on user input)
+        volSlider.value = String(Math.round(playerState.volume));
+        volSlider.addEventListener('input', () => window.api.player.setVolume(Number(volSlider.value)));
+
+        // --- Button actions ---
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             if (playerState.paused) window.api.player.play();
             else window.api.player.pause();
         });
 
-        // Keep pause button in sync with actual playback state
-        const onPaused = () => {
-            const b = document.getElementById('jmp-mini-pause');
-            if (b) b.textContent = '\u25B6'; // ▶
-        };
-        const onPlaying = () => {
-            const b = document.getElementById('jmp-mini-pause');
-            if (b) b.textContent = '\u23F8'; // ⏸
-        };
-        window.api.player.paused.connect(onPaused);
-        window.api.player.playing.connect(onPlaying);
-        pip._onPaused = onPaused;
-        pip._onPlaying = onPlaying;
-
-        expandBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
+        const doExpand = (e) => {
+            if (e) e.stopPropagation();
             window._nativeExitMiniPlayer();
-            // Try to navigate back to the active player view
             const player = window._mpvVideoPlayerInstance;
             const router = player && player.appRouter;
-            if (router && typeof router.showVideoOsd === 'function') {
-                router.showVideoOsd();
-            } else if (router && typeof router.back === 'function') {
-                router.back();
-            } else {
-                window.history.back();
-            }
-        });
+            if (router && typeof router.showVideoOsd === 'function') router.showVideoOsd();
+            else if (router && typeof router.back === 'function') router.back();
+            else window.history.back();
+        };
+        videoArea.addEventListener('click', doExpand);
+        expandBtn.addEventListener('click', doExpand);
 
         stopBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -482,35 +528,51 @@
             window.api.player.stop();
         });
 
-        // Aggressively remove the full-screen video overlay so the home page can
-        // receive scroll events. Jellyfin's destroy() also does this, but it runs
-        // asynchronously after navigation; doing it here ensures no gap.
+        // --- Window resize: keep the video hole in sync ---
+        const updateVideoRect = () => {
+            const r = videoArea.getBoundingClientRect();
+            window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height);
+        };
+        window.addEventListener('resize', updateVideoRect);
+        bar._onResize = updateVideoRect;
+
+        // --- Inject page padding so content isn't hidden behind the bar ---
+        if (!document.getElementById('jmp-mini-bar-style')) {
+            const st = document.createElement('style');
+            st.id = 'jmp-mini-bar-style';
+            st.textContent = 'body { padding-bottom: ' + BAR_H + 'px !important; }';
+            document.head.appendChild(st);
+        }
+
+        // Remove any lingering full-screen video overlay before appending the bar.
         const vcDlg = document.querySelector('.videoPlayerContainer');
         if (vcDlg && vcDlg.parentNode) vcDlg.parentNode.removeChild(vcDlg);
-        // Undo any overflow:hidden that the player applied to the body/html.
         document.body.classList.remove('hide-scroll');
         document.body.style.overflow = '';
         document.documentElement.style.overflow = '';
 
-        document.body.appendChild(pip);
+        document.body.appendChild(bar);
         window._mpvMiniPlayerActive = true;
 
-        const rect = pip.getBoundingClientRect();
-        window.api.player.setVideoRectangle(rect.left, rect.top, rect.width, rect.height);
+        // Position mpv video into the transparent hole (bottom-left of bar).
+        updateVideoRect();
     };
 
     window._nativeExitMiniPlayer = function() {
-        const pip = document.getElementById('jmp-mini-player');
-        if (!pip) {
+        const bar = document.getElementById('jmp-mini-bar');
+        if (!bar) {
             window._mpvMiniPlayerActive = false;
             return;
         }
-        if (pip._onDocPointerMove) document.removeEventListener('pointermove', pip._onDocPointerMove);
-        if (pip._onPaused) window.api.player.paused.disconnect(pip._onPaused);
-        if (pip._onPlaying) window.api.player.playing.disconnect(pip._onPlaying);
-        pip.parentNode.removeChild(pip);
+        if (bar._onPaused)   window.api.player.paused.disconnect(bar._onPaused);
+        if (bar._onPlaying)  window.api.player.playing.disconnect(bar._onPlaying);
+        if (bar._onTimePos)  window.api.player.positionUpdate.disconnect(bar._onTimePos);
+        if (bar._onDuration) window.api.player.updateDuration.disconnect(bar._onDuration);
+        if (bar._onResize)   window.removeEventListener('resize', bar._onResize);
+        if (bar.parentNode)  bar.parentNode.removeChild(bar);
+        const st = document.getElementById('jmp-mini-bar-style');
+        if (st && st.parentNode) st.parentNode.removeChild(st);
         window._mpvMiniPlayerActive = false;
-        // Reset the flag on the player instance so the restored player works cleanly
         const player = window._mpvVideoPlayerInstance;
         if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
