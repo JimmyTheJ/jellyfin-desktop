@@ -787,6 +787,17 @@ static void win_clamp_window_geometry(int* w, int* h, int* x, int* y) {
     if (*y < 0) *y = 0;
 }
 
+static void win_raise_window() {
+    HWND hwnd = g_win.mpv_hwnd;
+    if (!hwnd) return;
+    if (IsIconic(hwnd))
+        ShowWindow(hwnd, SW_RESTORE);
+    // SetForegroundWindow is subject to Windows focus-steal restrictions.
+    // If this process lacks permission it will flash the taskbar instead,
+    // which is still better than a silent no-op.
+    SetForegroundWindow(hwnd);
+}
+
 // =====================================================================
 // make_windows_platform
 // =====================================================================
@@ -826,6 +837,7 @@ Platform make_windows_platform() {
         .query_window_position = win_query_window_position,
         .clamp_window_geometry = win_clamp_window_geometry,
         .pump = win_pump,
+        .raise_window = win_raise_window,
         .set_cursor = input::windows::set_cursor,
         .set_idle_inhibit = win_set_idle_inhibit,
         .set_titlebar_color = win_set_titlebar_color,

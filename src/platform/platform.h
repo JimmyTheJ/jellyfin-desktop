@@ -99,6 +99,12 @@ struct Platform {
     // initiate_shutdown to break out of run_main_loop.
     void (*wake_main_loop)();
 
+    // Bring the application window to the foreground (restore from minimize if
+    // needed). Called by the single-instance handler when a second launch
+    // signals "raise". May be null on platforms where this is not implemented.
+    // Thread-safe: may be invoked from the listener thread.
+    void (*raise_window)();
+
     // Cursor shape/visibility (CT_NONE hides, others show with shape)
     void (*set_cursor)(cef_cursor_type_t type);
 
