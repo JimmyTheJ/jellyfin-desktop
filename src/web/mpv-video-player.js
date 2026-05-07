@@ -230,9 +230,10 @@
         }
 
         stop(destroyPlayer) {
-            // While in mini-player mode, suppress navigation-triggered stops so mpv keeps playing.
-            // The stop button in the overlay calls window.api.player.stop() directly, bypassing this.
-            if (this._isMiniPlayer && !destroyPlayer) {
+            // While in mini-player mode, suppress all stops so mpv keeps playing across
+            // page navigation. The stop button in the overlay calls window.api.player.stop()
+            // directly (bypassing this method), so that still works correctly.
+            if (this._isMiniPlayer) {
                 return Promise.resolve();
             }
             if (!destroyPlayer && this._videoDialog && this._currentPlayOptions?.backdropUrl) {
@@ -294,6 +295,11 @@
                 this._videoDialog = dlg;
 
                 this._core.connectSignals();
+                // If restoring from mini-player mode, the timer was stopped by destroy().
+                // Restart it so the position display stays smooth.
+                if (this._core._currentTime !== null && !this._core._paused) {
+                    this._core.startTimeUpdateTimer();
+                }
                 if (window.jmpNative) {
                     window.jmpNative.notifyRateChange(this._core._playRate);
                 }
