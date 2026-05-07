@@ -350,38 +350,43 @@
 
     window._nativeEnterMiniPlayer = function() {
         if (document.getElementById('jmp-mini-player')) return;
-        const PIP_W = 320, PIP_H = 180;
+        const PIP_W = 320, PIP_H = 180, CTRL_H = 44, MARGIN = 8;
 
-        // pointer-events:none on the outer container so the mini-player doesn't block
-        // page scrolling or keyboard navigation on the home screen.
+        // The pip div marks the video hole area. overflow:visible is critical:
+        // - lets the controls bar protrude above the pip rect (outside ClearView area)
+        // - avoids creating a scroll boundary that would trap mouse-wheel events
         const pip = document.createElement('div');
         pip.id = 'jmp-mini-player';
         pip.style.cssText = [
-            'position:fixed', 'right:0', 'bottom:0',
+            'position:fixed',
+            'right:' + MARGIN + 'px', 'bottom:' + MARGIN + 'px',
             'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
-            'z-index:10000', 'background:transparent',
-            'overflow:hidden',
-            'box-shadow:0 6px 28px rgba(0,0,0,0.9)',
-            'outline:1px solid rgba(255,255,255,0.35)',
-            'border-radius:4px',
+            'z-index:10000',
+            'overflow:visible',
+            'background:transparent',
+            'border-radius:0 0 4px 4px',
+            'box-shadow:0 0 0 1px rgba(255,255,255,0.3),0 8px 32px rgba(0,0,0,0.85)',
             'pointer-events:none'
         ].join(';');
 
-        // Inner fill captures hover/click for the whole PiP area while the outer
-        // container remains pointer-events:none (doesn't block page input).
-        const hoverFill = document.createElement('div');
-        hoverFill.style.cssText = 'position:absolute;inset:0;pointer-events:auto;cursor:default;';
-
+        // Controls bar sits ABOVE the pip div (top:-CTRL_H) so it is outside the
+        // ClearView rect. ClearView only clears the pip box, leaving these buttons
+        // fully visible in the CEF texture.
         const controls = document.createElement('div');
         controls.style.cssText = [
-            'position:absolute', 'bottom:0', 'left:0', 'right:0', 'height:44px',
-            'background:linear-gradient(transparent,rgba(0,0,0,0.85))',
+            'position:absolute',
+            'top:-' + CTRL_H + 'px', 'left:0', 'right:0', 'height:' + CTRL_H + 'px',
+            'background:rgba(0,0,0,0.85)',
+            'border-radius:4px 4px 0 0',
+            'box-shadow:0 0 0 1px rgba(255,255,255,0.3)',
             'display:flex', 'align-items:center', 'justify-content:space-between',
-            'padding:0 8px', 'opacity:0', 'transition:opacity 0.2s'
+            'padding:0 8px',
+            'opacity:0', 'transition:opacity 0.2s',
+            'pointer-events:auto'
         ].join(';');
 
         const btnCss = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
-                       'padding:4px 6px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,0.9);';
+                       'padding:4px 8px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,0.9);';
         const pauseBtn = document.createElement('button');
         pauseBtn.id = 'jmp-mini-pause';
         pauseBtn.style.cssText = btnCss;
@@ -408,11 +413,24 @@
         right.appendChild(stopBtn);
         controls.appendChild(pauseBtn);
         controls.appendChild(right);
-        hoverFill.appendChild(controls);
+
+        // hoverFill covers the video area for hover detection
+        const hoverFill = document.createElement('div');
+        hoverFill.style.cssText = 'position:absolute;inset:0;pointer-events:auto;cursor:default;';
+
+        pip.appendChild(controls);
         pip.appendChild(hoverFill);
 
-        hoverFill.addEventListener('mouseenter', () => { controls.style.opacity = '1'; });
-        hoverFill.addEventListener('mouseleave', () => { controls.style.opacity = '0'; });
+        // Shared hover state: show controls when cursor is over either the video
+        // area (hoverFill) or the controls bar itself; hide after a short delay.
+        let hideTimer = null;
+        const showControls = () => { clearTimeout(hideTimer); controls.style.opacity = '1'; };
+        const scheduleHide = () => { hideTimer = setTimeout(() => { controls.style.opacity = '0'; }, 400); };
+
+        hoverFill.addEventListener('mouseenter', showControls);
+        hoverFill.addEventListener('mouseleave', scheduleHide);
+        controls.addEventListener('mouseenter', showControls);
+        controls.addEventListener('mouseleave', scheduleHide);
 
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -457,12 +475,6 @@
 
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
-
-        // Release keyboard focus from any player element so the home page can
-        // receive keyboard navigation (arrow keys, enter, etc.) immediately.
-        if (document.activeElement && document.activeElement !== document.body) {
-            document.activeElement.blur();
-        }
 
         const rect = pip.getBoundingClientRect();
         window.api.player.setVideoRectangle(rect.left, rect.top, rect.width, rect.height);

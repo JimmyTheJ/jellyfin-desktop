@@ -380,6 +380,20 @@
                 } else {
                     window.history.back();
                 }
+                // After the home page route finishes, restore keyboard focus so
+                // the TV-style navigation (arrow keys, enter) works immediately.
+                const tryFocusHome = (attempts) => {
+                    const card = document.querySelector(
+                        '.homeSections .card, .homePage .card, [data-page] .card, ' +
+                        '.section-items .card, .itemsContainer .card'
+                    );
+                    if (card) {
+                        card.focus();
+                    } else if (attempts > 0) {
+                        setTimeout(() => tryFocusHome(attempts - 1), 200);
+                    }
+                };
+                setTimeout(() => tryFocusHome(5), 300);
             } else {
                 window._nativeExitMiniPlayer();
             }
