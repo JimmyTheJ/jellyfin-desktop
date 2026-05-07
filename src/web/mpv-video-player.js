@@ -276,6 +276,7 @@
                     this._videoDialog = null;
                     dlg.parentNode.removeChild(dlg);
                 }
+                if (window.jmpNative) window.jmpNative.playerOsdActive(false);
             } else {
                 this.removeMediaDialog();
             }

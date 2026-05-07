@@ -352,9 +352,13 @@
         if (document.getElementById('jmp-mini-player')) return;
         const PIP_W = 320, PIP_H = 180;
 
-        // Punch an alpha=0 hole in the CEF texture at the mini-player location so the mpv
-        // video beneath it shows through. mix-blend-mode:destination-out on a solid element
-        // sets destination pixels to alpha=0 (transparent) wherever this element covers them.
+        // Make body an isolation container so that mix-blend-mode:destination-out on
+        // #jmp-mini-hole creates genuinely transparent (alpha=0) pixels in the CEF
+        // output texture. Within the isolated body group, destination-out erases all
+        // painted content below it, and those alpha=0 pixels survive compositing onto
+        // the transparent viewport, allowing the mpv video layer to show through.
+        document.body.style.isolation = 'isolate';
+
         const hole = document.createElement('div');
         hole.id = 'jmp-mini-hole';
         hole.style.cssText = [
@@ -366,17 +370,25 @@
             'pointer-events:none'
         ].join(';');
 
+        // pointer-events:none on the outer container so the mini-player doesn't block
+        // page scrolling or keyboard navigation on the home screen.
         const pip = document.createElement('div');
         pip.id = 'jmp-mini-player';
         pip.style.cssText = [
             'position:fixed', 'right:0', 'bottom:0',
             'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
             'z-index:10000', 'background:transparent',
-            'cursor:pointer', 'overflow:hidden',
+            'overflow:hidden',
             'box-shadow:0 6px 28px rgba(0,0,0,0.9)',
             'outline:1px solid rgba(255,255,255,0.35)',
-            'border-radius:4px'
+            'border-radius:4px',
+            'pointer-events:none'
         ].join(';');
+
+        // Inner fill captures hover/click for the whole PiP area while the outer
+        // container remains pointer-events:none (doesn't block page input).
+        const hoverFill = document.createElement('div');
+        hoverFill.style.cssText = 'position:absolute;inset:0;pointer-events:auto;cursor:default;';
 
         const controls = document.createElement('div');
         controls.style.cssText = [
@@ -391,6 +403,7 @@
         const pauseBtn = document.createElement('button');
         pauseBtn.id = 'jmp-mini-pause';
         pauseBtn.style.cssText = btnCss;
+        pauseBtn.setAttribute('tabindex', '-1');
         pauseBtn.textContent = playerState.paused ? '\u25B6' : '\u23F8'; // ▶ or ⏸
         pauseBtn.title = 'Pause/Play';
 
@@ -399,11 +412,13 @@
 
         const expandBtn = document.createElement('button');
         expandBtn.style.cssText = btnCss;
+        expandBtn.setAttribute('tabindex', '-1');
         expandBtn.textContent = '\u26F6'; // ⛶ expand
         expandBtn.title = 'Restore';
 
         const stopBtn = document.createElement('button');
         stopBtn.style.cssText = btnCss;
+        stopBtn.setAttribute('tabindex', '-1');
         stopBtn.textContent = '\u2715'; // ✕
         stopBtn.title = 'Stop';
 
@@ -411,10 +426,11 @@
         right.appendChild(stopBtn);
         controls.appendChild(pauseBtn);
         controls.appendChild(right);
-        pip.appendChild(controls);
+        hoverFill.appendChild(controls);
+        pip.appendChild(hoverFill);
 
-        pip.addEventListener('mouseenter', () => { controls.style.opacity = '1'; });
-        pip.addEventListener('mouseleave', () => { controls.style.opacity = '0'; });
+        hoverFill.addEventListener('mouseenter', () => { controls.style.opacity = '1'; });
+        hoverFill.addEventListener('mouseleave', () => { controls.style.opacity = '0'; });
 
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -461,6 +477,12 @@
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
 
+        // Release keyboard focus from any player element so the home page can
+        // receive keyboard navigation (arrow keys, enter, etc.) immediately.
+        if (document.activeElement && document.activeElement !== document.body) {
+            document.activeElement.blur();
+        }
+
         const rect = pip.getBoundingClientRect();
         window.api.player.setVideoRectangle(rect.left, rect.top, rect.width, rect.height);
     };
@@ -481,6 +503,8 @@
         const player = window._mpvVideoPlayerInstance;
         if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
+        // Restore body compositing to default
+        document.body.style.isolation = '';
     };
 
     // window.NativeShell - app info and plugins
