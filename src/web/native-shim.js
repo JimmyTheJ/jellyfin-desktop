@@ -414,40 +414,32 @@
         controls.appendChild(pauseBtn);
         controls.appendChild(right);
 
-        // hoverFill covers the video area for hover detection
-        const hoverFill = document.createElement('div');
-        hoverFill.style.cssText = 'position:absolute;inset:0;pointer-events:auto;cursor:default;';
-
         pip.appendChild(controls);
-        pip.appendChild(hoverFill);
+        // No pointer-capturing fill — the video area has no child with pointer-events:auto.
+        // Native wheel events (and key events) pass directly through pip to whatever page
+        // element is underneath, so the home page scrolls freely while PiP is active.
 
-        // Shared hover state: show controls when cursor is over either the video
-        // area (hoverFill) or the controls bar itself; hide after a short delay.
+        // Show/hide controls by tracking pointer position via a document-level pointermove.
+        // This works even though the video area has no pointer-capturing element.
         let hideTimer = null;
         const showControls = () => { clearTimeout(hideTimer); controls.style.opacity = '1'; };
         const scheduleHide = () => { hideTimer = setTimeout(() => { controls.style.opacity = '0'; }, 400); };
 
-        hoverFill.addEventListener('mouseenter', showControls);
-        hoverFill.addEventListener('mouseleave', scheduleHide);
+        const onDocPointerMove = (e) => {
+            const pr = pip.getBoundingClientRect();
+            const cr = controls.getBoundingClientRect();
+            const inPip  = e.clientX >= pr.left && e.clientX <= pr.right &&
+                            e.clientY >= pr.top  && e.clientY <= pr.bottom;
+            const inCtrl = e.clientX >= cr.left && e.clientX <= cr.right &&
+                            e.clientY >= cr.top  && e.clientY <= cr.bottom;
+            if (inPip || inCtrl) showControls();
+            else scheduleHide();
+        };
+        document.addEventListener('pointermove', onDocPointerMove);
+        pip._onDocPointerMove = onDocPointerMove;
+
         controls.addEventListener('mouseenter', showControls);
         controls.addEventListener('mouseleave', scheduleHide);
-
-        // Forward wheel events to whatever page element is underneath the pip,
-        // so the home page can be scrolled even while the cursor is over the video.
-        hoverFill.addEventListener('wheel', (e) => {
-            hoverFill.style.pointerEvents = 'none';
-            const under = document.elementFromPoint(e.clientX, e.clientY);
-            hoverFill.style.pointerEvents = 'auto';
-            if (under && under !== hoverFill) {
-                under.dispatchEvent(new WheelEvent('wheel', {
-                    bubbles: true, cancelable: true,
-                    deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ,
-                    deltaMode: e.deltaMode, view: window,
-                    clientX: e.clientX, clientY: e.clientY,
-                }));
-            }
-            e.preventDefault();
-        }, { passive: false });
 
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -490,6 +482,16 @@
             window.api.player.stop();
         });
 
+        // Aggressively remove the full-screen video overlay so the home page can
+        // receive scroll events. Jellyfin's destroy() also does this, but it runs
+        // asynchronously after navigation; doing it here ensures no gap.
+        const vcDlg = document.querySelector('.videoPlayerContainer');
+        if (vcDlg && vcDlg.parentNode) vcDlg.parentNode.removeChild(vcDlg);
+        // Undo any overflow:hidden that the player applied to the body/html.
+        document.body.classList.remove('hide-scroll');
+        document.body.style.overflow = '';
+        document.documentElement.style.overflow = '';
+
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
 
@@ -503,6 +505,7 @@
             window._mpvMiniPlayerActive = false;
             return;
         }
+        if (pip._onDocPointerMove) document.removeEventListener('pointermove', pip._onDocPointerMove);
         if (pip._onPaused) window.api.player.paused.disconnect(pip._onPaused);
         if (pip._onPlaying) window.api.player.playing.disconnect(pip._onPlaying);
         pip.parentNode.removeChild(pip);

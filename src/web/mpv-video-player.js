@@ -261,7 +261,7 @@
             if (dlg) {
                 this.setTransparency(0);
                 this._videoDialog = null;
-                dlg.parentNode.removeChild(dlg);
+                if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
             }
         }
 
@@ -274,7 +274,7 @@
                 if (dlg) {
                     this.setTransparency(0);
                     this._videoDialog = null;
-                    dlg.parentNode.removeChild(dlg);
+                    if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
                 }
                 if (window.jmpNative) window.jmpNative.playerOsdActive(false);
             } else {
