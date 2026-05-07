@@ -404,40 +404,45 @@
         videoWrapper.appendChild(videoArea);
         bar.appendChild(videoWrapper);
 
-        // --- Info (title + time) ---
+        // --- Info (show name / episode / time — three stacked rows) ---
         const info = document.createElement('div');
-        info.style.cssText = 'flex:1;padding:0 16px;overflow:hidden;min-width:0;';
+        info.style.cssText = 'flex:1;padding:0 16px;overflow:hidden;min-width:0;' +
+            'display:flex;flex-direction:column;justify-content:center;gap:3px;';
 
         const titleEl = document.createElement('div');
-        titleEl.style.cssText = 'color:#fff;font-size:13px;font-weight:600;white-space:nowrap;' +
-            'overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;';
-        titleEl.textContent = 'Playing';
+        titleEl.style.cssText = 'color:#fff;font-size:14px;font-weight:700;white-space:nowrap;' +
+            'overflow:hidden;text-overflow:ellipsis;';
+        titleEl.textContent = '';
 
         const subtitleEl = document.createElement('div');
-        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.55);font-size:11px;white-space:nowrap;' +
+        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.70);font-size:11px;white-space:nowrap;' +
             'overflow:hidden;text-overflow:ellipsis;';
         subtitleEl.textContent = '';
 
+        const timeEl = document.createElement('div');
+        timeEl.style.cssText = 'color:rgba(255,255,255,0.45);font-size:11px;white-space:nowrap;';
+        timeEl.textContent = '';
+
         info.appendChild(titleEl);
         info.appendChild(subtitleEl);
+        info.appendChild(timeEl);
         bar.appendChild(info);
 
-        // Populate title from Jellyfin's playbackManager if available
+        // Populate title/episode from the current play options stored on the player instance.
+        // This is more reliable than playbackManager.currentItem() which can return null.
         try {
-            const pm = window.playbackManager;
-            if (pm) {
-                const pl = typeof pm.currentPlayer === 'function' ? pm.currentPlayer() : null;
-                const item = pl && typeof pm.currentItem === 'function' ? pm.currentItem(pl) : null;
-                if (item) {
-                    if (item.SeriesName) {
-                        titleEl.textContent = item.SeriesName;
-                        let ep = '';
-                        if (item.ParentIndexNumber != null) ep += 'S' + item.ParentIndexNumber;
-                        if (item.IndexNumber != null) ep += (ep ? ' ' : '') + 'E' + item.IndexNumber;
-                        const fullEp = ep + (item.Name ? (ep ? '  ·  ' : '') + item.Name : '');
-                        bar._episodeLabel = fullEp;
-                        subtitleEl.textContent = fullEp;
-                    } else {
+            const player = window._mpvVideoPlayerInstance;
+            const item = player && player._currentPlayOptions && player._currentPlayOptions.item;
+            if (item) {
+                if (item.SeriesName) {
+                    titleEl.textContent = item.SeriesName;
+                    let ep = '';
+                    if (item.ParentIndexNumber != null) ep += 'S' + item.ParentIndexNumber;
+                    if (item.IndexNumber != null) ep += (ep ? ' ' : '') + 'E' + item.IndexNumber;
+                    const fullEp = ep + (item.Name ? (ep ? '  ·  ' : '') + item.Name : '');
+                    bar._episodeLabel = fullEp;
+                    subtitleEl.textContent = fullEp;
+                } else {
                         titleEl.textContent = item.Name || 'Playing';
                         bar._episodeLabel = '';
                     }
@@ -509,8 +514,7 @@
             const durMs = bar._duration || 0;
             if (durMs > 0) {
                 progressFill.style.width = Math.min(100, (posMs / durMs) * 100) + '%';
-                const ep = bar._episodeLabel || '';
-                subtitleEl.textContent = (ep ? ep + '   ' : '') + fmtTime(posMs) + ' / ' + fmtTime(durMs);
+                timeEl.textContent = fmtTime(posMs) + ' / ' + fmtTime(durMs);
             }
         };
         const onDuration = (durMs) => { bar._duration = durMs; };
