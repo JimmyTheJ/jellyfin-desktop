@@ -114,6 +114,11 @@ struct Platform {
     // Titlebar color (KDE/KWin only, no-op on other compositors)
     void (*set_titlebar_color)(uint8_t r, uint8_t g, uint8_t b);
 
+    // Set a rectangular alpha=0 "hole" in the main CEF surface so the mpv
+    // video layer shows through. (x, y, w, h) in physical pixels; w=0 clears.
+    // Windows-only (D3D11 ClearView); null on other platforms.
+    void (*set_mini_player_hole)(int x, int y, int w, int h) = nullptr;
+
     // Whether the GPU can produce shared textures (dmabufs). Set during init.
     // When false, CEF should use software rendering (OnPaint) instead of
     // OnAcceleratedPaint, and present_software / overlay_present_software

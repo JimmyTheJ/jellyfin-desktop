@@ -350,31 +350,47 @@
 
     window._nativeEnterMiniPlayer = function() {
         if (document.getElementById('jmp-mini-player')) return;
-        const PIP_W = 320, PIP_H = 180;
+        const PIP_W = 320, PIP_H = 180, CTRL_H = 44, MARGIN = 8;
+
+        // The pip div marks the video hole area. overflow:visible is critical:
+        // - lets the controls bar protrude above the pip rect (outside ClearView area)
+        // - avoids creating a scroll boundary that would trap mouse-wheel events
         const pip = document.createElement('div');
         pip.id = 'jmp-mini-player';
         pip.style.cssText = [
-            'position:fixed', 'right:0', 'bottom:0',
+            'position:fixed',
+            'right:' + MARGIN + 'px', 'bottom:' + MARGIN + 'px',
             'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
-            'z-index:10000', 'background:transparent',
-            'cursor:pointer', 'overflow:hidden',
-            'box-shadow:0 4px 24px rgba(0,0,0,0.8)',
-            'border-top:1px solid rgba(255,255,255,0.1)',
-            'border-left:1px solid rgba(255,255,255,0.1)'
+            'z-index:10000',
+            'overflow:visible',
+            'background:transparent',
+            'border-radius:0 0 4px 4px',
+            'box-shadow:0 0 0 1px rgba(255,255,255,0.3),0 8px 32px rgba(0,0,0,0.85)',
+            'pointer-events:none'
         ].join(';');
 
+        // Controls bar sits ABOVE the pip div (top:-CTRL_H) so it is outside the
+        // ClearView rect. ClearView only clears the pip box, leaving these buttons
+        // fully visible in the CEF texture.
         const controls = document.createElement('div');
         controls.style.cssText = [
-            'position:absolute', 'bottom:0', 'left:0', 'right:0', 'height:40px',
-            'background:linear-gradient(transparent,rgba(0,0,0,0.75))',
+            'position:absolute',
+            'top:-' + CTRL_H + 'px', 'left:0', 'right:0', 'height:' + CTRL_H + 'px',
+            'background:rgba(0,0,0,0.85)',
+            'border-radius:4px 4px 0 0',
+            'box-shadow:0 0 0 1px rgba(255,255,255,0.3)',
             'display:flex', 'align-items:center', 'justify-content:space-between',
-            'padding:0 8px', 'opacity:0', 'transition:opacity 0.15s'
+            'padding:0 8px',
+            'opacity:0', 'transition:opacity 0.2s',
+            'pointer-events:auto'
         ].join(';');
 
-        const btnCss = 'background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:2px 5px;line-height:1;';
+        const btnCss = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
+                       'padding:4px 8px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,0.9);';
         const pauseBtn = document.createElement('button');
         pauseBtn.id = 'jmp-mini-pause';
         pauseBtn.style.cssText = btnCss;
+        pauseBtn.setAttribute('tabindex', '-1');
         pauseBtn.textContent = playerState.paused ? '\u25B6' : '\u23F8'; // ▶ or ⏸
         pauseBtn.title = 'Pause/Play';
 
@@ -383,11 +399,13 @@
 
         const expandBtn = document.createElement('button');
         expandBtn.style.cssText = btnCss;
-        expandBtn.textContent = '\u26F6'; // ⛶ four-corners / expand
-        expandBtn.title = 'Expand';
+        expandBtn.setAttribute('tabindex', '-1');
+        expandBtn.textContent = '\u26F6'; // ⛶ expand
+        expandBtn.title = 'Restore';
 
         const stopBtn = document.createElement('button');
         stopBtn.style.cssText = btnCss;
+        stopBtn.setAttribute('tabindex', '-1');
         stopBtn.textContent = '\u2715'; // ✕
         stopBtn.title = 'Stop';
 
@@ -395,10 +413,33 @@
         right.appendChild(stopBtn);
         controls.appendChild(pauseBtn);
         controls.appendChild(right);
-        pip.appendChild(controls);
 
-        pip.addEventListener('mouseenter', () => { controls.style.opacity = '1'; });
-        pip.addEventListener('mouseleave', () => { controls.style.opacity = '0'; });
+        pip.appendChild(controls);
+        // No pointer-capturing fill — the video area has no child with pointer-events:auto.
+        // Native wheel events (and key events) pass directly through pip to whatever page
+        // element is underneath, so the home page scrolls freely while PiP is active.
+
+        // Show/hide controls by tracking pointer position via a document-level pointermove.
+        // This works even though the video area has no pointer-capturing element.
+        let hideTimer = null;
+        const showControls = () => { clearTimeout(hideTimer); controls.style.opacity = '1'; };
+        const scheduleHide = () => { hideTimer = setTimeout(() => { controls.style.opacity = '0'; }, 400); };
+
+        const onDocPointerMove = (e) => {
+            const pr = pip.getBoundingClientRect();
+            const cr = controls.getBoundingClientRect();
+            const inPip  = e.clientX >= pr.left && e.clientX <= pr.right &&
+                            e.clientY >= pr.top  && e.clientY <= pr.bottom;
+            const inCtrl = e.clientX >= cr.left && e.clientX <= cr.right &&
+                            e.clientY >= cr.top  && e.clientY <= cr.bottom;
+            if (inPip || inCtrl) showControls();
+            else scheduleHide();
+        };
+        document.addEventListener('pointermove', onDocPointerMove);
+        pip._onDocPointerMove = onDocPointerMove;
+
+        controls.addEventListener('mouseenter', showControls);
+        controls.addEventListener('mouseleave', scheduleHide);
 
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -423,7 +464,16 @@
         expandBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             window._nativeExitMiniPlayer();
-            window.history.back();
+            // Try to navigate back to the active player view
+            const player = window._mpvVideoPlayerInstance;
+            const router = player && player.appRouter;
+            if (router && typeof router.showVideoOsd === 'function') {
+                router.showVideoOsd();
+            } else if (router && typeof router.back === 'function') {
+                router.back();
+            } else {
+                window.history.back();
+            }
         });
 
         stopBtn.addEventListener('click', (e) => {
@@ -431,6 +481,16 @@
             window._nativeExitMiniPlayer();
             window.api.player.stop();
         });
+
+        // Aggressively remove the full-screen video overlay so the home page can
+        // receive scroll events. Jellyfin's destroy() also does this, but it runs
+        // asynchronously after navigation; doing it here ensures no gap.
+        const vcDlg = document.querySelector('.videoPlayerContainer');
+        if (vcDlg && vcDlg.parentNode) vcDlg.parentNode.removeChild(vcDlg);
+        // Undo any overflow:hidden that the player applied to the body/html.
+        document.body.classList.remove('hide-scroll');
+        document.body.style.overflow = '';
+        document.documentElement.style.overflow = '';
 
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
@@ -441,11 +501,18 @@
 
     window._nativeExitMiniPlayer = function() {
         const pip = document.getElementById('jmp-mini-player');
-        if (!pip) return;
+        if (!pip) {
+            window._mpvMiniPlayerActive = false;
+            return;
+        }
+        if (pip._onDocPointerMove) document.removeEventListener('pointermove', pip._onDocPointerMove);
         if (pip._onPaused) window.api.player.paused.disconnect(pip._onPaused);
         if (pip._onPlaying) window.api.player.playing.disconnect(pip._onPlaying);
         pip.parentNode.removeChild(pip);
         window._mpvMiniPlayerActive = false;
+        // Reset the flag on the player instance so the restored player works cleanly
+        const player = window._mpvVideoPlayerInstance;
+        if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
     };
 

@@ -268,6 +268,8 @@ bool WebBrowser::handleMessage(const std::string& name,
     } else if (name == "openAbout") {
         AboutBrowser::open();
     } else if (name == "setVideoRect") {
+        int x = getIntArg(args, 0);
+        int y = getIntArg(args, 1);
         int w = getIntArg(args, 2);
         int h = getIntArg(args, 3);
         if (w <= 0 || h <= 0) {
@@ -275,6 +277,8 @@ bool WebBrowser::handleMessage(const std::string& name,
             g_mpv.SetVideoZoom(0.0);
             g_mpv.SetVideoAlignX(0.0);
             g_mpv.SetVideoAlignY(0.0);
+            if (g_platform.set_mini_player_hole)
+                g_platform.set_mini_player_hole(0, 0, 0, 0);
         } else {
             // Shrink and pin video to the bottom-right corner (mini player)
             double dpr    = mpv::display_scale() > 0.0 ? mpv::display_scale() : 1.0;
@@ -287,6 +291,14 @@ bool WebBrowser::handleMessage(const std::string& name,
             g_mpv.SetVideoZoom(std::log2(scale));
             g_mpv.SetVideoAlignX(1.0);
             g_mpv.SetVideoAlignY(1.0);
+            if (g_platform.set_mini_player_hole) {
+                g_platform.set_mini_player_hole(
+                    static_cast<int>(std::round(x * dpr)),
+                    static_cast<int>(std::round(y * dpr)),
+                    static_cast<int>(std::round(w * dpr)),
+                    static_cast<int>(std::round(h * dpr))
+                );
+            }
         }
     } else {
         return false;

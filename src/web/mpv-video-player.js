@@ -230,6 +230,12 @@
         }
 
         stop(destroyPlayer) {
+            // While in mini-player mode, suppress all stops so mpv keeps playing across
+            // page navigation. The stop button in the overlay calls window.api.player.stop()
+            // directly (bypassing this method), so that still works correctly.
+            if (this._isMiniPlayer) {
+                return Promise.resolve();
+            }
             if (!destroyPlayer && this._videoDialog && this._currentPlayOptions?.backdropUrl) {
                 const dlg = this._videoDialog;
                 const url = this._currentPlayOptions.backdropUrl;
@@ -255,7 +261,7 @@
             if (dlg) {
                 this.setTransparency(0);
                 this._videoDialog = null;
-                dlg.parentNode.removeChild(dlg);
+                if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
             }
         }
 
@@ -268,8 +274,9 @@
                 if (dlg) {
                     this.setTransparency(0);
                     this._videoDialog = null;
-                    dlg.parentNode.removeChild(dlg);
+                    if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
                 }
+                if (window.jmpNative) window.jmpNative.playerOsdActive(false);
             } else {
                 this.removeMediaDialog();
             }
@@ -289,6 +296,11 @@
                 this._videoDialog = dlg;
 
                 this._core.connectSignals();
+                // If restoring from mini-player mode, the timer was stopped by destroy().
+                // Restart it so the position display stays smooth.
+                if (this._core._currentTime !== null && !this._core._paused) {
+                    this._core.startTimeUpdateTimer();
+                }
                 if (window.jmpNative) {
                     window.jmpNative.notifyRateChange(this._core._playRate);
                 }
@@ -362,13 +374,49 @@
             this._isMiniPlayer = !this._isMiniPlayer;
             if (this._isMiniPlayer) {
                 window._nativeEnterMiniPlayer();
+
+                // Jellyfin's inputManager routes arrow keys as seek/volume commands
+                // whenever playbackManager.isPlaying() is true. Override it to return
+                // false while the pip is active so arrow keys go to the focus manager
+                // for normal home page navigation instead.
+                const pm = window.playbackManager;
+                if (pm && typeof pm.isPlaying === 'function' && !pm._mpvPipIsPlayingOrig) {
+                    pm._mpvPipIsPlayingOrig = pm.isPlaying.bind(pm);
+                    pm.isPlaying = function() {
+                        if (window._mpvMiniPlayerActive) return false;
+                        return pm._mpvPipIsPlayingOrig();
+                    };
+                }
+
                 // Navigate away so the user can browse the library
                 if (this.appRouter && typeof this.appRouter.home === 'function') {
                     this.appRouter.home();
                 } else {
                     window.history.back();
                 }
+
+                // Retry-focus the first home page item to restore arrow-key navigation.
+                const tryFocusHome = (attempts) => {
+                    const card = document.querySelector(
+                        '.homeSections .card, .homePage .card, .homeSectionsContainer .card, ' +
+                        '[data-page] .card, .section-items .card, .itemsContainer .card, ' +
+                        '.itemsContainer a, .homeSections a[tabindex], .homeSections [tabindex="0"]'
+                    );
+                    if (card) {
+                        card.focus({ preventScroll: true });
+                    } else if (attempts > 0) {
+                        setTimeout(() => tryFocusHome(attempts - 1), 300);
+                    }
+                };
+                setTimeout(() => tryFocusHome(10), 500);
             } else {
+                // Restore playbackManager.isPlaying() before exiting PiP.
+                const pm = window.playbackManager;
+                if (pm && pm._mpvPipIsPlayingOrig) {
+                    pm.isPlaying = pm._mpvPipIsPlayingOrig;
+                    delete pm._mpvPipIsPlayingOrig;
+                }
+
                 window._nativeExitMiniPlayer();
             }
         }
