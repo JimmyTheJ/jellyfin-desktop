@@ -432,6 +432,23 @@
         controls.addEventListener('mouseenter', showControls);
         controls.addEventListener('mouseleave', scheduleHide);
 
+        // Forward wheel events to whatever page element is underneath the pip,
+        // so the home page can be scrolled even while the cursor is over the video.
+        hoverFill.addEventListener('wheel', (e) => {
+            hoverFill.style.pointerEvents = 'none';
+            const under = document.elementFromPoint(e.clientX, e.clientY);
+            hoverFill.style.pointerEvents = 'auto';
+            if (under && under !== hoverFill) {
+                under.dispatchEvent(new WheelEvent('wheel', {
+                    bubbles: true, cancelable: true,
+                    deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ,
+                    deltaMode: e.deltaMode, view: window,
+                    clientX: e.clientX, clientY: e.clientY,
+                }));
+            }
+            e.preventDefault();
+        }, { passive: false });
+
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             if (playerState.paused) window.api.player.play();

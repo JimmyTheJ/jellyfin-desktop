@@ -374,27 +374,49 @@
             this._isMiniPlayer = !this._isMiniPlayer;
             if (this._isMiniPlayer) {
                 window._nativeEnterMiniPlayer();
+
+                // Jellyfin's inputManager routes arrow keys as seek/volume commands
+                // whenever playbackManager.isPlaying() is true. Override it to return
+                // false while the pip is active so arrow keys go to the focus manager
+                // for normal home page navigation instead.
+                const pm = window.playbackManager;
+                if (pm && typeof pm.isPlaying === 'function' && !pm._mpvPipIsPlayingOrig) {
+                    pm._mpvPipIsPlayingOrig = pm.isPlaying.bind(pm);
+                    pm.isPlaying = function() {
+                        if (window._mpvMiniPlayerActive) return false;
+                        return pm._mpvPipIsPlayingOrig();
+                    };
+                }
+
                 // Navigate away so the user can browse the library
                 if (this.appRouter && typeof this.appRouter.home === 'function') {
                     this.appRouter.home();
                 } else {
                     window.history.back();
                 }
-                // After the home page route finishes, restore keyboard focus so
-                // the TV-style navigation (arrow keys, enter) works immediately.
+
+                // Retry-focus the first home page item to restore arrow-key navigation.
                 const tryFocusHome = (attempts) => {
                     const card = document.querySelector(
-                        '.homeSections .card, .homePage .card, [data-page] .card, ' +
-                        '.section-items .card, .itemsContainer .card'
+                        '.homeSections .card, .homePage .card, .homeSectionsContainer .card, ' +
+                        '[data-page] .card, .section-items .card, .itemsContainer .card, ' +
+                        '.itemsContainer a, .homeSections a[tabindex], .homeSections [tabindex="0"]'
                     );
                     if (card) {
-                        card.focus();
+                        card.focus({ preventScroll: true });
                     } else if (attempts > 0) {
-                        setTimeout(() => tryFocusHome(attempts - 1), 200);
+                        setTimeout(() => tryFocusHome(attempts - 1), 300);
                     }
                 };
-                setTimeout(() => tryFocusHome(5), 300);
+                setTimeout(() => tryFocusHome(10), 500);
             } else {
+                // Restore playbackManager.isPlaying() before exiting PiP.
+                const pm = window.playbackManager;
+                if (pm && pm._mpvPipIsPlayingOrig) {
+                    pm.isPlaying = pm._mpvPipIsPlayingOrig;
+                    delete pm._mpvPipIsPlayingOrig;
+                }
+
                 window._nativeExitMiniPlayer();
             }
         }
