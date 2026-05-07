@@ -280,7 +280,7 @@ bool WebBrowser::handleMessage(const std::string& name,
             if (g_platform.set_mini_player_hole)
                 g_platform.set_mini_player_hole(0, 0, 0, 0);
         } else {
-            // Shrink and pin video to the bottom-right corner (mini player)
+            // Shrink and pin video to the requested rect (mini player)
             double dpr    = mpv::display_scale() > 0.0 ? mpv::display_scale() : 1.0;
             double win_lw = mpv::window_pw() / dpr;
             double win_lh = mpv::window_ph() / dpr;
@@ -289,8 +289,21 @@ bool WebBrowser::handleMessage(const std::string& name,
                 win_lh > 0 ? h / win_lh : 0.25
             );
             g_mpv.SetVideoZoom(std::log2(scale));
-            g_mpv.SetVideoAlignX(1.0);
-            g_mpv.SetVideoAlignY(1.0);
+
+            // Compute alignment from the target rect center relative to the window.
+            // video-align-x/y: -1 = left/top, 0 = center, 1 = right/bottom.
+            // Formula: align = 2*(center - win/2) / (win - video_size)
+            double cx = x + w / 2.0;
+            double cy = y + h / 2.0;
+            double video_lw = win_lw * scale;
+            double video_lh = win_lh * scale;
+            double denom_x  = win_lw - video_lw;
+            double denom_y  = win_lh - video_lh;
+            double ax = denom_x > 1e-6 ? 2.0 * (cx - win_lw / 2.0) / denom_x : 0.0;
+            double ay = denom_y > 1e-6 ? 2.0 * (cy - win_lh / 2.0) / denom_y : 0.0;
+            g_mpv.SetVideoAlignX(std::max(-1.0, std::min(1.0, ax)));
+            g_mpv.SetVideoAlignY(std::max(-1.0, std::min(1.0, ay)));
+
             if (g_platform.set_mini_player_hole) {
                 g_platform.set_mini_player_hole(
                     static_cast<int>(std::round(x * dpr)),
