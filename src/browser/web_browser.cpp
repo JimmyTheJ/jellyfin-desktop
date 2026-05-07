@@ -61,6 +61,7 @@ static void applySettingValue(const std::string& section, const std::string& key
     else if (key == "audioPassthrough") s.setAudioPassthrough(value);
     else if (key == "audioExclusive") s.setAudioExclusive(value == "true");
     else if (key == "audioChannels") s.setAudioChannels(value);
+    else if (key == "audioNormalization") s.setAudioNormalization(value);
     else if (key == "logLevel") s.setLogLevel(value);
     else LOG_WARN(LOG_CEF, "Unknown setting key: {}.{}", section.c_str(), key.c_str());
     s.saveAsync();
@@ -141,6 +142,41 @@ bool WebBrowser::handleMessage(const std::string& name,
         int subIdx = getIntArg(args, 3);
         LOG_INFO(LOG_CEF, "playerLoad: audio={} sub={} start={}ms url={}",
                  audioIdx, subIdx, startMs, url.c_str());
+
+        // Apply audio normalization filter before loading so it takes effect immediately.
+        // If the server has measured loudness for this item, a precise static gain is used.
+        // Otherwise fall back to the real-time filter preset chosen in Settings.
+        {
+            const std::string& normFilter = Settings::instance().audioNormalization();
+            if (normFilter.empty()) {
+                // Normalization off — clear any filter left from a previous file.
+                g_mpv.ApplyAudioFilters("");
+            } else {
+                bool usedStaticGain = false;
+                if (args->GetSize() > 4) {
+                    std::string metaJson = args->GetString(4).ToString();
+                    cJSON* root = cJSON_Parse(metaJson.c_str());
+                    if (root) {
+                        cJSON* gainNode = cJSON_GetObjectItem(root, "NormalizationGain");
+                        if (gainNode && cJSON_IsNumber(gainNode)) {
+                            // NormalizationGain is in dB relative to -18 LUFS (ReplayGain 2.0).
+                            float gainDb = static_cast<float>(gainNode->valuedouble);
+                            char af[64];
+                            snprintf(af, sizeof(af), "volume=%.3fdB", gainDb);
+                            LOG_INFO(LOG_CEF, "playerLoad: applying static gain {:.3f} dB from server LUFS data", gainDb);
+                            g_mpv.ApplyAudioFilters(af);
+                            usedStaticGain = true;
+                        }
+                        cJSON_Delete(root);
+                    }
+                }
+                if (!usedStaticGain) {
+                    // No server-measured loudness — use the real-time filter preset.
+                    g_mpv.ApplyAudioFilters(normFilter);
+                }
+            }
+        }
+
         MpvHandle::LoadOptions opts;
         opts.startSecs = startMs / 1000.0;
         opts.audioTrack = audioIdx;

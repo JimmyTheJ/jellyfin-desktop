@@ -65,6 +65,7 @@ public:
     void SetAudioSpdif(const std::string& codecs)    { SetOptionString("audio-spdif", codecs); }
     void SetAudioExclusive(bool v)                   { SetOptionFlag("audio-exclusive", v); }
     void SetAudioChannels(const std::string& layout)  { SetOptionString("audio-channels", layout); }
+    void SetAudioFilters(const std::string& filters)  { SetOptionString("af", filters); }
 
     // =====================================================================
     // Property access (synchronous - safe in main thread)
@@ -99,6 +100,10 @@ public:
     void SetSubtitleTrack(int64_t id)    { SetPropertyIntAsync("sid", id); }
     void SetAudioDelay(double secs)      { SetPropertyDoubleAsync("audio-delay", secs); }
     void SetStartPosition(double secs)   { SetPropertyDoubleAsync("start", secs); }    void SubAdd(const std::string& url)   { CommandAsync({"sub-add", url, "select"}); }
+
+    // Set audio filter chain at runtime (per-file, overrides the pre-init option).
+    // Call before LoadFile so the filter applies to the new stream.
+    void ApplyAudioFilters(const std::string& filters) { SetPropertyStringAsync("af", filters); }
     // mpv track selection: -1 = auto, 0 = disable, 1+ = specific track
     static constexpr int64_t kTrackAuto    = -1;
     static constexpr int64_t kTrackDisable =  0;

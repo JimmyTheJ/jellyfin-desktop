@@ -2,6 +2,8 @@ import 'dev/linux/linux.just'
 import 'dev/macos/macos.just'
 import 'dev/windows/windows.just'
 
+set windows-shell := ["cmd.exe", "/c"]
+
 # List available recipes
 list:
     @just --list

@@ -50,6 +50,9 @@ public:
     const std::string& audioChannels() const { return audio_channels_; }
     void setAudioChannels(const std::string& v) { audio_channels_ = v; }
 
+    const std::string& audioNormalization() const { return audio_normalization_; }
+    void setAudioNormalization(const std::string& v) { audio_normalization_ = v; }
+
     bool disableGpuCompositing() const { return disable_gpu_compositing_; }
     void setDisableGpuCompositing(bool v) { disable_gpu_compositing_ = v; }
 
@@ -77,6 +80,7 @@ private:
     std::string audio_passthrough_;
     bool audio_exclusive_ = false;
     std::string audio_channels_;
+    std::string audio_normalization_;
     bool disable_gpu_compositing_ = false;
     bool titlebar_theme_color_ = true;
     bool transparent_titlebar_ = true;
