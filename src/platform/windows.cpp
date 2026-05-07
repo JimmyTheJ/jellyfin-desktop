@@ -22,6 +22,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <mutex>
 #include <thread>
 #include <atomic>
@@ -44,7 +45,11 @@ struct WinState {
     // D3D11
     ID3D11Device1* d3d_device = nullptr;
     ID3D11DeviceContext* d3d_context = nullptr;
+    ID3D11DeviceContext1* d3d_context1 = nullptr;  // for ClearView (mini-player hole)
     IDXGIFactory2* dxgi_factory = nullptr;
+
+    // Mini-player hole rect in physical pixels (w=0 means inactive)
+    struct { int x = 0, y = 0, w = 0, h = 0; } mini_hole;
 
     // DirectComposition
     IDCompositionDevice* dcomp_device = nullptr;
@@ -110,6 +115,10 @@ static bool init_d3d() {
         LOG_ERROR(LOG_PLATFORM, "QueryInterface for ID3D11Device1 failed: 0x{:08x}", hr);
         return false;
     }
+
+    // QI for ID3D11DeviceContext1 (needed for ClearView to punch mini-player hole)
+    g_win.d3d_context->QueryInterface(__uuidof(ID3D11DeviceContext1),
+                                      (void**)&g_win.d3d_context1);
 
     // Get DXGI factory
     IDXGIDevice* dxgi_device = nullptr;
@@ -247,11 +256,37 @@ static void win_present(const CefAcceleratedPaintInfo& info) {
     ID3D11Texture2D* bb = nullptr;
     g_win.main_swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb);
     g_win.d3d_context->CopyResource(bb, src);
+
+    // Punch an alpha=0 hole for the mini-player so the mpv video layer shows through
+    if (g_win.d3d_context1 && g_win.mini_hole.w > 0) {
+        D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        rtvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        ID3D11RenderTargetView* rtv = nullptr;
+        if (SUCCEEDED(g_win.d3d_device->CreateRenderTargetView(bb, &rtvDesc, &rtv))) {
+            const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            D3D11_RECT rect = {
+                static_cast<LONG>(std::max(0, g_win.mini_hole.x)),
+                static_cast<LONG>(std::max(0, g_win.mini_hole.y)),
+                static_cast<LONG>(std::min(w, g_win.mini_hole.x + g_win.mini_hole.w)),
+                static_cast<LONG>(std::min(h, g_win.mini_hole.y + g_win.mini_hole.h))
+            };
+            if (rect.right > rect.left && rect.bottom > rect.top)
+                g_win.d3d_context1->ClearView(rtv, clear, &rect, 1);
+            rtv->Release();
+        }
+    }
+
     bb->Release();
     src->Release();
 
     g_win.main_swap_chain->Present(0, 0);
     g_win.dcomp_device->Commit();
+}
+
+static void win_set_mini_player_hole(int x, int y, int w, int h) {
+    std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+    g_win.mini_hole = {x, y, w, h};
 }
 
 static void win_present_software(const CefRenderHandler::RectList&, const void*, int, int) {
@@ -700,6 +735,7 @@ static void win_cleanup() {
 
     // Release D3D11
     if (g_win.dxgi_factory) { g_win.dxgi_factory->Release(); g_win.dxgi_factory = nullptr; }
+    if (g_win.d3d_context1) { g_win.d3d_context1->Release(); g_win.d3d_context1 = nullptr; }
     if (g_win.d3d_context) { g_win.d3d_context->Release(); g_win.d3d_context = nullptr; }
     if (g_win.d3d_device) { g_win.d3d_device->Release(); g_win.d3d_device = nullptr; }
 
@@ -841,6 +877,7 @@ Platform make_windows_platform() {
         .set_cursor = input::windows::set_cursor,
         .set_idle_inhibit = win_set_idle_inhibit,
         .set_titlebar_color = win_set_titlebar_color,
+        .set_mini_player_hole = win_set_mini_player_hole,
         .clipboard_read_text_async = win_clipboard_read_text_async,
         .open_external_url = win_open_external_url,
     };

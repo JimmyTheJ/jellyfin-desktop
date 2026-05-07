@@ -352,24 +352,6 @@
         if (document.getElementById('jmp-mini-player')) return;
         const PIP_W = 320, PIP_H = 180;
 
-        // Make body an isolation container so that mix-blend-mode:destination-out on
-        // #jmp-mini-hole creates genuinely transparent (alpha=0) pixels in the CEF
-        // output texture. Within the isolated body group, destination-out erases all
-        // painted content below it, and those alpha=0 pixels survive compositing onto
-        // the transparent viewport, allowing the mpv video layer to show through.
-        document.body.style.isolation = 'isolate';
-
-        const hole = document.createElement('div');
-        hole.id = 'jmp-mini-hole';
-        hole.style.cssText = [
-            'position:fixed', 'right:0', 'bottom:0',
-            'width:' + PIP_W + 'px', 'height:' + PIP_H + 'px',
-            'z-index:9999',
-            'background:rgba(0,0,0,1)',
-            'mix-blend-mode:destination-out',
-            'pointer-events:none'
-        ].join(';');
-
         // pointer-events:none on the outer container so the mini-player doesn't block
         // page scrolling or keyboard navigation on the home screen.
         const pip = document.createElement('div');
@@ -473,7 +455,6 @@
             window.api.player.stop();
         });
 
-        document.body.appendChild(hole);
         document.body.appendChild(pip);
         window._mpvMiniPlayerActive = true;
 
@@ -489,8 +470,6 @@
 
     window._nativeExitMiniPlayer = function() {
         const pip = document.getElementById('jmp-mini-player');
-        const hole = document.getElementById('jmp-mini-hole');
-        if (hole && hole.parentNode) hole.parentNode.removeChild(hole);
         if (!pip) {
             window._mpvMiniPlayerActive = false;
             return;
@@ -503,8 +482,6 @@
         const player = window._mpvVideoPlayerInstance;
         if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
-        // Restore body compositing to default
-        document.body.style.isolation = '';
     };
 
     // window.NativeShell - app info and plugins
