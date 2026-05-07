@@ -86,6 +86,12 @@ static void try_close_browser(auto* b) {
 void initiate_shutdown() {
     bool expected = false;
     if (!g_shutting_down.compare_exchange_strong(expected, true)) return;
+    // Drop the single-instance pipe immediately so any new launch attempt
+    // that arrives during our multi-second CEF/mpv teardown can start fresh
+    // rather than hitting the pipe, sending a "raise" no-op, and exiting.
+#ifndef __APPLE__
+    stopListener();
+#endif
     try_close_browser(g_web_browser);
     try_close_browser(g_overlay_browser);
     try_close_browser(g_about_browser);
@@ -530,7 +536,8 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     startListener([](const std::string&) {
-        // TODO: raise window via xdg-activation
+        if (g_shutting_down.load(std::memory_order_relaxed)) return;
+        if (g_platform.raise_window) g_platform.raise_window();
     });
     // Ensure listener thread is joined on any exit path (std::thread
     // destructor calls std::terminate if joinable).
