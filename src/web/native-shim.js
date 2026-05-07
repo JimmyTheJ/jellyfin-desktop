@@ -351,7 +351,8 @@
     window._nativeEnterMiniPlayer = function() {
         if (document.getElementById('jmp-mini-bar')) return;
 
-        const BAR_H = 90, VID_W = 160, VID_H = 90;
+        const BAR_H = 96, VID_HOLE_W = 152, VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
+        const WRAPPER_W = VID_HOLE_W + VID_PAD_X * 2; // 168 — total width of video pane section
 
         // --- Bar shell ---
         const bar = document.createElement('div');
@@ -368,7 +369,10 @@
         // Progress bar — spans only the non-video portion of the bar so it isn't
         // zeroed by ClearView (which only clears the leftmost VID_W columns).
         const progressBg = document.createElement('div');
-        progressBg.style.cssText = 'position:absolute;top:0;left:' + VID_W + 'px;right:0;height:3px;' +
+        // Full-width progress bar at the very bottom of the bar.
+        // Positioned below the ClearView zone (hole ends VID_PAD_Y px above bar bottom),
+        // so it won't be zeroed by ClearView.
+        progressBg.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:3px;' +
             'background:rgba(255,255,255,0.15);overflow:hidden;cursor:pointer;z-index:1;';
         const progressFill = document.createElement('div');
         progressFill.style.cssText = 'height:100%;background:#00a4dc;width:0%;pointer-events:none;' +
@@ -384,12 +388,21 @@
             if (dur > 0) window.api.input.positionSeek(fraction * dur);
         });
 
-        // --- Live video hole (transparent; mpv renders here) ---
+        // --- Video pane: wrapper provides visual padding; inner videoArea is the transparent hole ---
+        const videoWrapper = document.createElement('div');
+        videoWrapper.style.cssText = [
+            'width:' + WRAPPER_W + 'px', 'height:' + BAR_H + 'px', 'flex-shrink:0',
+            'display:flex', 'align-items:center', 'justify-content:center',
+            'border-right:1px solid rgba(255,255,255,0.08)',
+            'box-sizing:border-box', 'cursor:pointer',
+            'padding:' + VID_PAD_Y + 'px ' + VID_PAD_X + 'px'
+        ].join(';');
+        videoWrapper.title = 'Click to restore player';
         const videoArea = document.createElement('div');
-        videoArea.style.cssText = 'width:' + VID_W + 'px;height:' + VID_H + 'px;flex-shrink:0;' +
-            'background:transparent;cursor:pointer;';
-        videoArea.title = 'Click to restore player';
-        bar.appendChild(videoArea);
+        videoArea.style.cssText = 'width:' + VID_HOLE_W + 'px;height:' + VID_HOLE_H + 'px;' +
+            'background:transparent;flex-shrink:0;';
+        videoWrapper.appendChild(videoArea);
+        bar.appendChild(videoWrapper);
 
         // --- Info (title + time) ---
         const info = document.createElement('div');
@@ -416,8 +429,18 @@
                 const pl = typeof pm.currentPlayer === 'function' ? pm.currentPlayer() : null;
                 const item = pl && typeof pm.currentItem === 'function' ? pm.currentItem(pl) : null;
                 if (item) {
-                    titleEl.textContent = item.SeriesName || item.Name || 'Playing';
-                    if (item.SeriesName) subtitleEl.textContent = item.Name || '';
+                    if (item.SeriesName) {
+                        titleEl.textContent = item.SeriesName;
+                        let ep = '';
+                        if (item.ParentIndexNumber != null) ep += 'S' + item.ParentIndexNumber;
+                        if (item.IndexNumber != null) ep += (ep ? ' ' : '') + 'E' + item.IndexNumber;
+                        const fullEp = ep + (item.Name ? (ep ? '  ·  ' : '') + item.Name : '');
+                        bar._episodeLabel = fullEp;
+                        subtitleEl.textContent = fullEp;
+                    } else {
+                        titleEl.textContent = item.Name || 'Playing';
+                        bar._episodeLabel = '';
+                    }
                 }
             }
         } catch (_) {}
@@ -486,8 +509,8 @@
             const durMs = bar._duration || 0;
             if (durMs > 0) {
                 progressFill.style.width = Math.min(100, (posMs / durMs) * 100) + '%';
-                const episode = subtitleEl._episode || '';
-                subtitleEl.textContent = (episode ? episode + '   ' : '') + fmtTime(posMs) + ' / ' + fmtTime(durMs);
+                const ep = bar._episodeLabel || '';
+                subtitleEl.textContent = (ep ? ep + '   ' : '') + fmtTime(posMs) + ' / ' + fmtTime(durMs);
             }
         };
         const onDuration = (durMs) => { bar._duration = durMs; };
@@ -519,7 +542,7 @@
             else if (router && typeof router.back === 'function') router.back();
             else window.history.back();
         };
-        videoArea.addEventListener('click', doExpand);
+        videoWrapper.addEventListener('click', doExpand);
         expandBtn.addEventListener('click', doExpand);
 
         stopBtn.addEventListener('click', (e) => {
