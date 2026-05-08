@@ -443,9 +443,8 @@
                     bar._episodeLabel = fullEp;
                     subtitleEl.textContent = fullEp;
                 } else {
-                        titleEl.textContent = item.Name || 'Playing';
-                        bar._episodeLabel = '';
-                    }
+                    titleEl.textContent = item.Name || '';
+                    bar._episodeLabel = '';
                 }
             }
         } catch (_) {}
