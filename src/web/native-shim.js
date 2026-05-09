@@ -345,259 +345,693 @@
         window.api.input.positionSeek(positionMs);
     };
 
-    // Mini player — Plex-style persistent bottom bar
+    // ─── PiP mini-player ─────────────────────────────────────────────────────
     window._mpvMiniPlayerActive = false;
 
-    window._nativeEnterMiniPlayer = function() {
-        if (document.getElementById('jmp-mini-bar')) return;
+    // ── Shared helpers ────────────────────────────────────────────────────────
 
+    function _pipFmtTime(ms) {
+        const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+        return m + ':' + String(s % 60).padStart(2, '0');
+    }
+
+    function _pipGetItem() {
+        try {
+            const p = window._mpvVideoPlayerInstance;
+            return (p && p._currentPlayOptions && p._currentPlayOptions.item) || null;
+        } catch (_) { return null; }
+    }
+
+    function _pipUpdateVideoRect(videoArea) {
+        const r = videoArea.getBoundingClientRect();
+        window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height);
+    }
+
+    const _PIP_BTN_CSS = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
+        'padding:6px 9px;border-radius:4px;line-height:1;opacity:0.8;flex-shrink:0;' +
+        'transition:opacity 0.1s,background 0.1s;';
+    function _pipMkBtn(icon, title) {
+        const b = document.createElement('button');
+        b.style.cssText = _PIP_BTN_CSS;
+        b.textContent = icon;
+        b.title = title;
+        b.setAttribute('tabindex', '-1');
+        b.addEventListener('mouseenter', () => { b.style.opacity = '1'; b.style.background = 'rgba(255,255,255,0.12)'; });
+        b.addEventListener('mouseleave', () => { b.style.opacity = '0.8'; b.style.background = 'none'; });
+        return b;
+    }
+
+    // Drag panel via handleEl. onStart() called once on first move; onMove(x,y) RAF-throttled;
+    // onEnd() called on mouseup. Returns cleanup fn.
+    function _pipDrag(panel, handleEl, onStart, onMove, onEnd) {
+        let active = false, started = false, sx = 0, sy = 0, ox = 0, oy = 0, rafId = null;
+        const onDown = (e) => {
+            if (e.button !== 0) return;
+            const r = panel.getBoundingClientRect();
+            active = true; started = false;
+            sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+            document.addEventListener('mousemove', onMv);
+            document.addEventListener('mouseup', onUp);
+            e.preventDefault();
+        };
+        const onMv = (e) => {
+            if (!active) return;
+            if (!started) { started = true; if (onStart) onStart(); }
+            if (rafId) cancelAnimationFrame(rafId);
+            rafId = requestAnimationFrame(() => { onMove(ox + e.clientX - sx, oy + e.clientY - sy); });
+        };
+        const onUp = () => {
+            active = false;
+            document.removeEventListener('mousemove', onMv);
+            document.removeEventListener('mouseup', onUp);
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+            if (started && onEnd) onEnd();
+        };
+        handleEl.addEventListener('mousedown', onDown);
+        return () => {
+            handleEl.removeEventListener('mousedown', onDown);
+            document.removeEventListener('mousemove', onMv);
+            document.removeEventListener('mouseup', onUp);
+            if (rafId) cancelAnimationFrame(rafId);
+        };
+    }
+
+    // Attach 4-corner resize handles to panel. onEnd() called after each resize gesture.
+    // Returns cleanup fn.
+    function _pipResize(panel, minW, minH, onEnd) {
+        const SZ = 14;
+        const dirs = ['nw', 'ne', 'sw', 'se'];
+        const cursors = { nw: 'nw-resize', ne: 'ne-resize', sw: 'sw-resize', se: 'se-resize' };
+        const stops = [];
+        for (const dir of dirs) {
+            const h = document.createElement('div');
+            h.style.cssText = 'position:absolute;width:' + SZ + 'px;height:' + SZ + 'px;' +
+                'cursor:' + cursors[dir] + ';z-index:2;' +
+                (dir[0] === 'n' ? 'top:0;' : 'bottom:0;') +
+                (dir[1] === 'w' ? 'left:0;' : 'right:0;');
+            panel.appendChild(h);
+            let sx, sy, sr, rafId = null;
+            const onDown = (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault(); e.stopPropagation();
+                sx = e.clientX; sy = e.clientY;
+                sr = panel.getBoundingClientRect();
+                document.addEventListener('mousemove', onMv);
+                document.addEventListener('mouseup', onUp);
+            };
+            const onMv = (e) => {
+                if (rafId) cancelAnimationFrame(rafId);
+                rafId = requestAnimationFrame(() => {
+                    const dx = e.clientX - sx, dy = e.clientY - sy;
+                    let l = sr.left, t = sr.top, w = sr.width, ht = sr.height;
+                    if (dir[1] === 'e') w  = Math.max(minW, w + dx);
+                    if (dir[0] === 's') ht = Math.max(minH, ht + dy);
+                    if (dir[1] === 'w') { w = Math.max(minW, w - dx); l = sr.right - w; }
+                    if (dir[0] === 'n') { ht = Math.max(minH, ht - dy); t = sr.bottom - ht; }
+                    panel.style.left = l + 'px'; panel.style.top = t + 'px';
+                    panel.style.width = w + 'px'; panel.style.height = ht + 'px';
+                    panel.style.right = 'auto'; panel.style.bottom = 'auto';
+                });
+            };
+            const onUp = () => {
+                document.removeEventListener('mousemove', onMv);
+                document.removeEventListener('mouseup', onUp);
+                if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+                if (onEnd) onEnd();
+            };
+            h.addEventListener('mousedown', onDown);
+            stops.push(() => {
+                h.removeEventListener('mousedown', onDown);
+                document.removeEventListener('mousemove', onMv);
+                document.removeEventListener('mouseup', onUp);
+            });
+        }
+        return () => stops.forEach(fn => fn());
+    }
+
+    // Returns snapped {x,y} if within threshold of any corner, else null.
+    function _pipCornerSnap(x, y, w, h) {
+        const THR = 80, M = 16, ww = window.innerWidth, wh = window.innerHeight;
+        const corners = [
+            { x: M, y: M }, { x: ww - w - M, y: M },
+            { x: M, y: wh - h - M }, { x: ww - w - M, y: wh - h - M },
+        ];
+        for (const c of corners) {
+            if (Math.abs(x - c.x) < THR && Math.abs(y - c.y) < THR) return c;
+        }
+        return null;
+    }
+
+    function _pipSavePos(key, x, y, w, h) {
+        try { localStorage.setItem(key, JSON.stringify({ x, y, w, h })); } catch (_) {}
+    }
+    function _pipLoadPos(key) {
+        try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (_) { return null; }
+    }
+
+    function _pipPopulateItem(panel, titleEl, subtitleEl) {
+        const item = _pipGetItem();
+        if (!item) return;
+        if (item.SeriesName) {
+            if (titleEl) titleEl.textContent = item.SeriesName;
+            let ep = '';
+            if (item.ParentIndexNumber != null) ep += 'S' + item.ParentIndexNumber;
+            if (item.IndexNumber != null) ep += (ep ? ' ' : '') + 'E' + item.IndexNumber;
+            const full = ep + (item.Name ? (ep ? '  ·  ' : '') + item.Name : '');
+            panel._episodeLabel = full;
+            if (subtitleEl) subtitleEl.textContent = full;
+        } else {
+            if (titleEl) titleEl.textContent = item.Name || '';
+            panel._episodeLabel = '';
+        }
+    }
+
+    // Wire playback signals onto panel. progressFill and timeEl may be null.
+    function _pipWireSignals(panel, progressFill, timeEl, pauseBtnId) {
+        const onPaused  = () => { const b = document.getElementById(pauseBtnId); if (b) b.textContent = '\u25B6'; };
+        const onPlaying = () => { const b = document.getElementById(pauseBtnId); if (b) b.textContent = '\u23F8'; };
+        const onTimePos = (posMs) => {
+            const durMs = panel._duration || 0;
+            if (durMs <= 0) return;
+            if (progressFill) progressFill.style.width = Math.min(100, (posMs / durMs) * 100) + '%';
+            if (timeEl) timeEl.textContent = _pipFmtTime(posMs) + ' / ' + _pipFmtTime(durMs);
+        };
+        const onDuration = (durMs) => { panel._duration = durMs; };
+        window.api.player.paused.connect(onPaused);
+        window.api.player.playing.connect(onPlaying);
+        window.api.player.positionUpdate.connect(onTimePos);
+        window.api.player.updateDuration.connect(onDuration);
+        panel._onPaused   = onPaused;
+        panel._onPlaying  = onPlaying;
+        panel._onTimePos  = onTimePos;
+        panel._onDuration = onDuration;
+        panel._duration   = playerState.duration;
+    }
+
+    function _pipUnwireSignals(panel) {
+        if (panel._onPaused)   window.api.player.paused.disconnect(panel._onPaused);
+        if (panel._onPlaying)  window.api.player.playing.disconnect(panel._onPlaying);
+        if (panel._onTimePos)  window.api.player.positionUpdate.disconnect(panel._onTimePos);
+        if (panel._onDuration) window.api.player.updateDuration.disconnect(panel._onDuration);
+    }
+
+    // Shared expand action used by all modes.
+    function _pipDoExpand() {
+        window._nativeExitMiniPlayer();
+        const pl = window._mpvVideoPlayerInstance;
+        const router = pl && pl.appRouter;
+        if (router && typeof router.showVideoOsd === 'function') router.showVideoOsd();
+        else if (router && typeof router.back === 'function') router.back();
+        else window.history.back();
+    }
+
+    // Shared cleanup before appending any mode's panel.
+    function _pipCleanupPage() {
+        const vcDlg = document.querySelector('.videoPlayerContainer');
+        if (vcDlg && vcDlg.parentNode) vcDlg.parentNode.removeChild(vcDlg);
+        document.body.classList.remove('hide-scroll');
+        document.body.style.overflow = '';
+        document.documentElement.style.overflow = '';
+    }
+
+    // Mode picker popover — opened by the gear button in any mode.
+    function _showModePicker(anchorEl) {
+        const existing = document.getElementById('jmp-pip-modepicker');
+        if (existing) { if (existing.parentNode) existing.parentNode.removeChild(existing); return; }
+
+        const MODES = [
+            { key: 'bar',     icon: '▬', label: 'Bottom Bar',     desc: 'Full-width bar with live video' },
+            { key: 'float',   icon: '⧉', label: 'Floating Panel',  desc: 'Draggable, resizable panel' },
+            { key: 'minimal', icon: '⊡', label: 'Minimal Overlay', desc: 'Video only, controls on hover' },
+        ];
+        const cur = localStorage.getItem('jmp_pip_mode') || 'bar';
+
+        const pop = document.createElement('div');
+        pop.id = 'jmp-pip-modepicker';
+        pop.style.cssText = [
+            'position:fixed', 'z-index:10002',
+            'background:rgba(18,18,18,0.97)',
+            'border:1px solid rgba(255,255,255,0.12)',
+            'border-radius:8px', 'padding:6px', 'min-width:220px',
+            'box-shadow:0 8px 32px rgba(0,0,0,0.7)',
+            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        ].join(';');
+
+        const ar = anchorEl.getBoundingClientRect();
+        pop.style.bottom = (window.innerHeight - ar.top + 8) + 'px';
+        pop.style.right  = (window.innerWidth  - ar.right)  + 'px';
+
+        for (const m of MODES) {
+            const active = m.key === cur;
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;' +
+                'border-radius:6px;cursor:pointer;transition:background 0.1s;' +
+                (active ? 'background:rgba(0,164,220,0.22);' : '');
+            row.addEventListener('mouseenter', () => { if (!active) row.style.background = 'rgba(255,255,255,0.07)'; });
+            row.addEventListener('mouseleave', () => { if (!active) row.style.background = ''; });
+
+            const ic = document.createElement('span');
+            ic.style.cssText = 'font-size:15px;width:22px;text-align:center;color:' +
+                (active ? '#00a4dc' : 'rgba(255,255,255,0.55)') + ';';
+            ic.textContent = m.icon;
+
+            const lb = document.createElement('div');
+            lb.style.cssText = 'font-size:12px;font-weight:600;color:#fff;';
+            lb.textContent = m.label;
+            const ds = document.createElement('div');
+            ds.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.4);margin-top:1px;';
+            ds.textContent = m.desc;
+            const tx = document.createElement('div');
+            tx.appendChild(lb); tx.appendChild(ds);
+
+            row.appendChild(ic); row.appendChild(tx);
+            pop.appendChild(row);
+
+            row.addEventListener('click', () => {
+                if (pop.parentNode) pop.parentNode.removeChild(pop);
+                if (m.key === cur) return;
+                localStorage.setItem('jmp_pip_mode', m.key);
+                window._nativeExitMiniPlayer();
+                window._nativeEnterMiniPlayer();
+            });
+        }
+
+        document.body.appendChild(pop);
+        setTimeout(() => {
+            const onOutside = (e) => {
+                if (!pop.contains(e.target)) {
+                    if (pop.parentNode) pop.parentNode.removeChild(pop);
+                    document.removeEventListener('click', onOutside, true);
+                }
+            };
+            document.addEventListener('click', onOutside, true);
+        }, 0);
+    }
+
+    // ── Bottom bar mode ───────────────────────────────────────────────────────
+    function _enterBarMode() {
         const BAR_H = 96, VID_HOLE_W = 152, VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
-        const WRAPPER_W = VID_HOLE_W + VID_PAD_X * 2; // 168 — total width of video pane section
+        const WRAPPER_W = VID_HOLE_W + VID_PAD_X * 2;
 
-        // --- Bar shell ---
-        const bar = document.createElement('div');
-        bar.id = 'jmp-mini-bar';
-        bar.style.cssText = [
+        const panel = document.createElement('div');
+        panel.id = 'jmp-pip-panel';
+        panel.style.cssText = [
             'position:fixed', 'bottom:0', 'left:0', 'right:0', 'height:' + BAR_H + 'px',
             'background:rgba(10,10,10,0.93)',
             'border-top:1px solid rgba(255,255,255,0.10)',
             'z-index:10000', 'display:flex', 'align-items:center',
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-            'box-sizing:border-box'
+            'box-sizing:border-box',
         ].join(';');
 
-        // Progress bar — spans only the non-video portion of the bar so it isn't
-        // zeroed by ClearView (which only clears the leftmost VID_W columns).
+        // Full-width progress bar at very bottom — below ClearView zone.
         const progressBg = document.createElement('div');
-        // Full-width progress bar at the very bottom of the bar.
-        // Positioned below the ClearView zone (hole ends VID_PAD_Y px above bar bottom),
-        // so it won't be zeroed by ClearView.
         progressBg.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:3px;' +
             'background:rgba(255,255,255,0.15);overflow:hidden;cursor:pointer;z-index:1;';
         const progressFill = document.createElement('div');
         progressFill.style.cssText = 'height:100%;background:#00a4dc;width:0%;pointer-events:none;' +
             'transition:width 0.8s linear;';
         progressBg.appendChild(progressFill);
-        bar.appendChild(progressBg);
-
-        // Seek on click
+        panel.appendChild(progressBg);
         progressBg.addEventListener('click', (e) => {
-            const rect = progressBg.getBoundingClientRect();
-            const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            const dur = bar._duration || 0;
-            if (dur > 0) window.api.input.positionSeek(fraction * dur);
+            const r = progressBg.getBoundingClientRect();
+            const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+            const dur = panel._duration || 0;
+            if (dur > 0) window.api.input.positionSeek(frac * dur);
         });
 
-        // --- Video pane: wrapper provides visual padding; inner videoArea is the transparent hole ---
+        // Video wrapper with padding — inner div is the transparent ClearView hole.
         const videoWrapper = document.createElement('div');
         videoWrapper.style.cssText = [
             'width:' + WRAPPER_W + 'px', 'height:' + BAR_H + 'px', 'flex-shrink:0',
             'display:flex', 'align-items:center', 'justify-content:center',
             'border-right:1px solid rgba(255,255,255,0.08)',
             'box-sizing:border-box', 'cursor:pointer',
-            'padding:' + VID_PAD_Y + 'px ' + VID_PAD_X + 'px'
+            'padding:' + VID_PAD_Y + 'px ' + VID_PAD_X + 'px',
         ].join(';');
         videoWrapper.title = 'Click to restore player';
         const videoArea = document.createElement('div');
         videoArea.style.cssText = 'width:' + VID_HOLE_W + 'px;height:' + VID_HOLE_H + 'px;' +
             'background:transparent;flex-shrink:0;';
         videoWrapper.appendChild(videoArea);
-        bar.appendChild(videoWrapper);
+        panel.appendChild(videoWrapper);
 
-        // --- Info (show name / episode / time — three stacked rows) ---
+        // Info: three stacked rows (show name / episode / time).
         const info = document.createElement('div');
         info.style.cssText = 'flex:1;padding:0 16px;overflow:hidden;min-width:0;' +
             'display:flex;flex-direction:column;justify-content:center;gap:3px;';
-
-        const titleEl = document.createElement('div');
-        titleEl.style.cssText = 'color:#fff;font-size:14px;font-weight:700;white-space:nowrap;' +
-            'overflow:hidden;text-overflow:ellipsis;';
-        titleEl.textContent = '';
-
+        const titleEl    = document.createElement('div');
+        titleEl.style.cssText    = 'color:#fff;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
         const subtitleEl = document.createElement('div');
-        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.70);font-size:11px;white-space:nowrap;' +
-            'overflow:hidden;text-overflow:ellipsis;';
-        subtitleEl.textContent = '';
+        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.70);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        const timeEl     = document.createElement('div');
+        timeEl.style.cssText     = 'color:rgba(255,255,255,0.45);font-size:11px;white-space:nowrap;';
+        info.appendChild(titleEl); info.appendChild(subtitleEl); info.appendChild(timeEl);
+        panel.appendChild(info);
+        _pipPopulateItem(panel, titleEl, subtitleEl);
 
-        const timeEl = document.createElement('div');
-        timeEl.style.cssText = 'color:rgba(255,255,255,0.45);font-size:11px;white-space:nowrap;';
-        timeEl.textContent = '';
-
-        info.appendChild(titleEl);
-        info.appendChild(subtitleEl);
-        info.appendChild(timeEl);
-        bar.appendChild(info);
-
-        // Populate title/episode from the current play options stored on the player instance.
-        // This is more reliable than playbackManager.currentItem() which can return null.
-        try {
-            const player = window._mpvVideoPlayerInstance;
-            const item = player && player._currentPlayOptions && player._currentPlayOptions.item;
-            if (item) {
-                if (item.SeriesName) {
-                    titleEl.textContent = item.SeriesName;
-                    let ep = '';
-                    if (item.ParentIndexNumber != null) ep += 'S' + item.ParentIndexNumber;
-                    if (item.IndexNumber != null) ep += (ep ? ' ' : '') + 'E' + item.IndexNumber;
-                    const fullEp = ep + (item.Name ? (ep ? '  ·  ' : '') + item.Name : '');
-                    bar._episodeLabel = fullEp;
-                    subtitleEl.textContent = fullEp;
-                } else {
-                    titleEl.textContent = item.Name || '';
-                    bar._episodeLabel = '';
-                }
-            }
-        } catch (_) {}
-
-        // --- Controls ---
+        // Controls.
         const controls = document.createElement('div');
         controls.style.cssText = 'display:flex;align-items:center;gap:0;padding:0 12px;flex-shrink:0;';
 
-        const btnCss = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
-            'padding:6px 9px;border-radius:4px;line-height:1;opacity:0.8;transition:opacity 0.1s,' +
-            'background 0.1s;';
-        const mkBtn = (icon, title) => {
-            const b = document.createElement('button');
-            b.style.cssText = btnCss;
-            b.textContent = icon;
-            b.title = title;
-            b.setAttribute('tabindex', '-1');
-            b.addEventListener('mouseenter', () => { b.style.opacity = '1'; b.style.background = 'rgba(255,255,255,0.1)'; });
-            b.addEventListener('mouseleave', () => { b.style.opacity = '0.8'; b.style.background = 'none'; });
-            return b;
-        };
-
-        const pauseBtn = mkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
-        pauseBtn.id = 'jmp-mini-pause';
+        const pauseBtn = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        pauseBtn.id = 'jmp-pip-pause';
         pauseBtn.style.fontSize = '22px';
 
-        const expandBtn = mkBtn('\u26F6', 'Restore full player'); // ⛶
-        const stopBtn   = mkBtn('\u2715', 'Stop playback');       // ✕
-
-        // Volume: icon + range slider
         const volWrap = document.createElement('div');
         volWrap.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px;';
         const volIcon = document.createElement('span');
         volIcon.style.cssText = 'color:rgba(255,255,255,0.7);font-size:15px;cursor:default;';
-        volIcon.textContent = '\uD83D\uDD0A'; // 🔊
+        volIcon.textContent = '\uD83D\uDD0A';
         const volSlider = document.createElement('input');
-        volSlider.type = 'range';
-        volSlider.min = '0'; volSlider.max = '100';
+        volSlider.type = 'range'; volSlider.min = '0'; volSlider.max = '100';
         volSlider.style.cssText = 'width:64px;height:3px;cursor:pointer;accent-color:#00a4dc;' +
             'outline:none;border:none;background:rgba(255,255,255,0.2);border-radius:2px;';
-        volSlider.value = String(Math.round((window.api.player.volume || 100)));
-        volWrap.appendChild(volIcon);
-        volWrap.appendChild(volSlider);
+        volSlider.value = String(Math.round(playerState.volume));
+        volSlider.addEventListener('input', () => window.api.player.setVolume(Number(volSlider.value)));
+        volWrap.appendChild(volIcon); volWrap.appendChild(volSlider);
+
+        const expandBtn = _pipMkBtn('\u26F6', 'Restore full player');
+        const stopBtn   = _pipMkBtn('\u2715', 'Stop playback');
+        const gearBtn   = _pipMkBtn('\u2699', 'PiP mode');
+        gearBtn.style.fontSize = '15px';
 
         controls.appendChild(pauseBtn);
         controls.appendChild(volWrap);
         controls.appendChild(expandBtn);
         controls.appendChild(stopBtn);
-        bar.appendChild(controls);
+        controls.appendChild(gearBtn);
+        panel.appendChild(controls);
 
-        // --- Signal connections ---
-        const onPaused  = () => { const b = document.getElementById('jmp-mini-pause'); if (b) b.textContent = '\u25B6'; };
-        const onPlaying = () => { const b = document.getElementById('jmp-mini-pause'); if (b) b.textContent = '\u23F8'; };
-        window.api.player.paused.connect(onPaused);
-        window.api.player.playing.connect(onPlaying);
-        bar._onPaused  = onPaused;
-        bar._onPlaying = onPlaying;
+        _pipWireSignals(panel, progressFill, timeEl, 'jmp-pip-pause');
 
-        // Progress + time updates
-        const fmtTime = (ms) => {
-            const s = Math.floor(ms / 1000);
-            const m = Math.floor(s / 60), sec = s % 60;
-            return m + ':' + String(sec).padStart(2, '0');
-        };
-        const onTimePos = (posMs) => {
-            const durMs = bar._duration || 0;
-            if (durMs > 0) {
-                progressFill.style.width = Math.min(100, (posMs / durMs) * 100) + '%';
-                timeEl.textContent = fmtTime(posMs) + ' / ' + fmtTime(durMs);
-            }
-        };
-        const onDuration = (durMs) => { bar._duration = durMs; };
-        window.api.player.positionUpdate.connect(onTimePos);
-        window.api.player.updateDuration.connect(onDuration);
-        bar._onTimePos  = onTimePos;
-        bar._onDuration = onDuration;
-
-        // Seed duration from current playerState if already known
-        bar._duration = playerState.duration;
-
-        // Volume slider (no live signal — seed from playerState, update on user input)
-        volSlider.value = String(Math.round(playerState.volume));
-        volSlider.addEventListener('input', () => window.api.player.setVolume(Number(volSlider.value)));
-
-        // --- Button actions ---
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (playerState.paused) window.api.player.play();
-            else window.api.player.pause();
+            if (playerState.paused) window.api.player.play(); else window.api.player.pause();
         });
+        videoWrapper.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
+        expandBtn.addEventListener('click',    (e) => { e.stopPropagation(); _pipDoExpand(); });
+        stopBtn.addEventListener('click',      (e) => { e.stopPropagation(); window._nativeExitMiniPlayer(); window.api.player.stop(); });
+        gearBtn.addEventListener('click',      (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
 
-        const doExpand = (e) => {
-            if (e) e.stopPropagation();
-            window._nativeExitMiniPlayer();
-            const player = window._mpvVideoPlayerInstance;
-            const router = player && player.appRouter;
-            if (router && typeof router.showVideoOsd === 'function') router.showVideoOsd();
-            else if (router && typeof router.back === 'function') router.back();
-            else window.history.back();
-        };
-        videoWrapper.addEventListener('click', doExpand);
-        expandBtn.addEventListener('click', doExpand);
+        const updateRect = () => _pipUpdateVideoRect(videoArea);
+        window.addEventListener('resize', updateRect);
+        panel._onResize = updateRect;
 
-        stopBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            window._nativeExitMiniPlayer();
-            window.api.player.stop();
-        });
-
-        // --- Window resize: keep the video hole in sync ---
-        const updateVideoRect = () => {
-            const r = videoArea.getBoundingClientRect();
-            window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height);
-        };
-        window.addEventListener('resize', updateVideoRect);
-        bar._onResize = updateVideoRect;
-
-        // --- Inject page padding so content isn't hidden behind the bar ---
-        if (!document.getElementById('jmp-mini-bar-style')) {
+        // Inject body padding so page content isn't hidden behind the bar.
+        if (!document.getElementById('jmp-pip-style')) {
             const st = document.createElement('style');
-            st.id = 'jmp-mini-bar-style';
-            st.textContent = 'body { padding-bottom: ' + BAR_H + 'px !important; }';
+            st.id = 'jmp-pip-style';
+            st.textContent = 'body{padding-bottom:' + BAR_H + 'px!important}';
             document.head.appendChild(st);
         }
 
-        // Remove any lingering full-screen video overlay before appending the bar.
-        const vcDlg = document.querySelector('.videoPlayerContainer');
-        if (vcDlg && vcDlg.parentNode) vcDlg.parentNode.removeChild(vcDlg);
-        document.body.classList.remove('hide-scroll');
-        document.body.style.overflow = '';
-        document.documentElement.style.overflow = '';
-
-        document.body.appendChild(bar);
+        _pipCleanupPage();
+        document.body.appendChild(panel);
         window._mpvMiniPlayerActive = true;
+        updateRect();
+    }
 
-        // Position mpv video into the transparent hole (bottom-left of bar).
-        updateVideoRect();
+    // ── Floating panel mode ───────────────────────────────────────────────────
+    function _enterFloatMode() {
+        const TITLE_H = 34, CTRL_H = 36, MIN_W = 220, MIN_H = 180;
+        const saved = _pipLoadPos('jmp_pip_float_pos');
+        const W  = saved ? saved.w : 320;
+        const H  = saved ? saved.h : 260;
+        const px = saved ? saved.x : window.innerWidth  - W - 16;
+        const py = saved ? saved.y : window.innerHeight - H - 16;
+
+        const panel = document.createElement('div');
+        panel.id = 'jmp-pip-panel';
+        panel.style.cssText = [
+            'position:fixed',
+            'left:' + px + 'px', 'top:' + py + 'px',
+            'width:' + W + 'px', 'height:' + H + 'px',
+            'background:rgba(12,12,12,0.95)',
+            'border:1px solid rgba(255,255,255,0.12)',
+            'border-radius:10px', 'overflow:hidden',
+            'box-shadow:0 8px 32px rgba(0,0,0,0.7)',
+            'z-index:10000', 'display:flex', 'flex-direction:column',
+            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+            'box-sizing:border-box',
+        ].join(';');
+
+        // Drag handle / title bar.
+        const titleBar = document.createElement('div');
+        titleBar.style.cssText = 'height:' + TITLE_H + 'px;flex-shrink:0;display:flex;' +
+            'align-items:center;padding:0 10px;cursor:move;gap:6px;overflow:hidden;' +
+            'border-bottom:1px solid rgba(255,255,255,0.07);user-select:none;';
+        const titleEl    = document.createElement('div');
+        titleEl.style.cssText    = 'flex:1;font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        const subtitleEl = document.createElement('div');
+        subtitleEl.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:45%;';
+        titleBar.appendChild(titleEl); titleBar.appendChild(subtitleEl);
+        panel.appendChild(titleBar);
+        _pipPopulateItem(panel, titleEl, subtitleEl);
+
+        // Transparent video hole — fills the space between title bar and controls.
+        const videoArea = document.createElement('div');
+        videoArea.style.cssText = 'flex:1;background:transparent;min-height:0;';
+        panel.appendChild(videoArea);
+
+        // Controls bar.
+        const controls = document.createElement('div');
+        controls.style.cssText = 'height:' + CTRL_H + 'px;flex-shrink:0;display:flex;' +
+            'align-items:center;padding:0 4px;border-top:1px solid rgba(255,255,255,0.07);gap:0;';
+
+        const pauseBtn  = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        pauseBtn.id = 'jmp-pip-pause';
+        pauseBtn.style.fontSize = '16px'; pauseBtn.style.padding = '4px 8px';
+
+        const timeEl = document.createElement('div');
+        timeEl.style.cssText = 'flex:1;font-size:10px;color:rgba(255,255,255,0.4);padding:0 4px;white-space:nowrap;';
+
+        const expandBtn = _pipMkBtn('\u26F6', 'Restore full player');
+        expandBtn.style.fontSize = '14px'; expandBtn.style.padding = '4px 7px';
+
+        const PIN_STATES = ['free', 'br', 'bl', 'tr', 'tl'];
+        const PIN_ICONS  = { free: '\uD83D\uDCCC', br: '\u2198', bl: '\u2199', tr: '\u2197', tl: '\u2196' };
+        const PIN_TIPS   = { free: 'Pin to corner', br: 'Pinned: bottom-right', bl: 'Pinned: bottom-left', tr: 'Pinned: top-right', tl: 'Pinned: top-left' };
+        panel._pinState = 'free';
+        const pinBtn = _pipMkBtn(PIN_ICONS.free, PIN_TIPS.free);
+        pinBtn.style.fontSize = '13px'; pinBtn.style.padding = '4px 7px';
+
+        const stopBtn = _pipMkBtn('\u2715', 'Stop playback');
+        stopBtn.style.fontSize = '13px'; stopBtn.style.padding = '4px 7px';
+        const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
+        gearBtn.style.fontSize = '13px'; gearBtn.style.padding = '4px 7px';
+
+        controls.appendChild(pauseBtn);
+        controls.appendChild(timeEl);
+        controls.appendChild(expandBtn);
+        controls.appendChild(pinBtn);
+        controls.appendChild(stopBtn);
+        controls.appendChild(gearBtn);
+        panel.appendChild(controls);
+
+        // Helpers for pinning.
+        const applyPin = (state) => {
+            panel._pinState = state;
+            pinBtn.textContent = PIN_ICONS[state];
+            pinBtn.title = PIN_TIPS[state];
+            if (state === 'free') return;
+            const M = 16;
+            const pw = panel.offsetWidth, ph = panel.offsetHeight;
+            if (state === 'br') { panel.style.left = (window.innerWidth  - pw - M) + 'px'; panel.style.top = (window.innerHeight - ph - M) + 'px'; }
+            if (state === 'bl') { panel.style.left = M + 'px';                              panel.style.top = (window.innerHeight - ph - M) + 'px'; }
+            if (state === 'tr') { panel.style.left = (window.innerWidth  - pw - M) + 'px'; panel.style.top = M + 'px'; }
+            if (state === 'tl') { panel.style.left = M + 'px';                             panel.style.top = M + 'px'; }
+            panel.style.right = 'auto'; panel.style.bottom = 'auto';
+            _pipUpdateVideoRect(videoArea);
+        };
+
+        // Drag — disable video hole during drag to avoid mpv alignment lag.
+        const stopDrag = _pipDrag(
+            panel, titleBar,
+            () => { window.api.player.setVideoRectangle(0, 0, 0, 0); },
+            (nx, ny) => {
+                nx = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth,  nx));
+                ny = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, ny));
+                panel.style.left = nx + 'px'; panel.style.top = ny + 'px';
+                panel.style.right = 'auto'; panel.style.bottom = 'auto';
+            },
+            () => {
+                const r = panel.getBoundingClientRect();
+                const snap = _pipCornerSnap(r.left, r.top, r.width, r.height);
+                if (snap) { panel.style.left = snap.x + 'px'; panel.style.top = snap.y + 'px'; }
+                _pipSavePos('jmp_pip_float_pos', parseFloat(panel.style.left), parseFloat(panel.style.top), r.width, r.height);
+                _pipUpdateVideoRect(videoArea);
+            }
+        );
+        panel._stopDrag = stopDrag;
+
+        // Resize — disable hole during resize, restore on end.
+        const stopResize = _pipResize(panel, MIN_W, MIN_H, () => {
+            const r = panel.getBoundingClientRect();
+            _pipSavePos('jmp_pip_float_pos', r.left, r.top, r.width, r.height);
+            _pipUpdateVideoRect(videoArea);
+        });
+        panel._stopResize = stopResize;
+
+        // During resize moves the hole rect must be cleared (same as drag).
+        // We temporarily zero the rect; _pipResize calls onEnd to restore it.
+        // To handle the continuous clearing during resize, intercept onMv via the
+        // videoArea itself: ClearView will show old position during resize, so hide it.
+        videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); }); // don't drag via video
+
+        _pipWireSignals(panel, null, timeEl, 'jmp-pip-pause');
+
+        pauseBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (playerState.paused) window.api.player.play(); else window.api.player.pause();
+        });
+        expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
+        stopBtn.addEventListener('click',   (e) => { e.stopPropagation(); window._nativeExitMiniPlayer(); window.api.player.stop(); });
+        gearBtn.addEventListener('click',   (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
+        pinBtn.addEventListener('click',    (e) => {
+            e.stopPropagation();
+            applyPin(PIN_STATES[(PIN_STATES.indexOf(panel._pinState) + 1) % PIN_STATES.length]);
+        });
+
+        const updateRect = () => {
+            if (panel._pinState !== 'free') applyPin(panel._pinState);
+            _pipUpdateVideoRect(videoArea);
+        };
+        window.addEventListener('resize', updateRect);
+        panel._onResize = updateRect;
+
+        _pipCleanupPage();
+        document.body.appendChild(panel);
+        window._mpvMiniPlayerActive = true;
+        _pipUpdateVideoRect(videoArea);
+    }
+
+    // ── Minimal overlay mode ──────────────────────────────────────────────────
+    function _enterMinimalMode() {
+        // Fixed 16:9 video hole; 36px controls strip below (outside ClearView zone).
+        const CTRL_H = 36, VID_W = 320, VID_H = 180;
+        const PANEL_H = VID_H + CTRL_H;
+        const saved = _pipLoadPos('jmp_pip_minimal_pos');
+        const px = saved ? saved.x : window.innerWidth  - VID_W - 16;
+        const py = saved ? saved.y : window.innerHeight - PANEL_H - 16;
+
+        const panel = document.createElement('div');
+        panel.id = 'jmp-pip-panel';
+        panel.style.cssText = [
+            'position:fixed',
+            'left:' + px + 'px', 'top:' + py + 'px',
+            'width:' + VID_W + 'px', 'height:' + PANEL_H + 'px',
+            'z-index:10000', 'cursor:move',
+            'border-radius:6px', 'overflow:hidden',
+            'box-shadow:0 4px 20px rgba(0,0,0,0.6)',
+            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+            'background:#000',
+        ].join(';');
+
+        // Transparent video hole — top VID_H px of panel.
+        const videoArea = document.createElement('div');
+        videoArea.style.cssText = 'position:absolute;left:0;top:0;width:' + VID_W + 'px;height:' + VID_H + 'px;background:transparent;';
+        panel.appendChild(videoArea);
+
+        // Controls strip below the video hole — always opaque, so ClearView doesn't touch it.
+        const ctrlStrip = document.createElement('div');
+        ctrlStrip.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:' + CTRL_H + 'px;' +
+            'background:rgba(10,10,10,0.93);display:flex;align-items:center;padding:0 4px;gap:0;' +
+            'border-top:1px solid rgba(255,255,255,0.08);';
+
+        const pauseBtn  = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        pauseBtn.id = 'jmp-pip-pause';
+        pauseBtn.style.fontSize = '15px'; pauseBtn.style.padding = '4px 8px';
+
+        const spacer = document.createElement('div');
+        spacer.style.cssText = 'flex:1;';
+
+        const expandBtn = _pipMkBtn('\u26F6', 'Restore full player');
+        expandBtn.style.fontSize = '13px'; expandBtn.style.padding = '4px 7px';
+        const stopBtn = _pipMkBtn('\u2715', 'Stop playback');
+        stopBtn.style.fontSize = '12px'; stopBtn.style.padding = '4px 7px';
+        const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
+        gearBtn.style.fontSize = '12px'; gearBtn.style.padding = '4px 7px';
+
+        ctrlStrip.appendChild(pauseBtn);
+        ctrlStrip.appendChild(spacer);
+        ctrlStrip.appendChild(expandBtn);
+        ctrlStrip.appendChild(stopBtn);
+        ctrlStrip.appendChild(gearBtn);
+        panel.appendChild(ctrlStrip);
+
+        // Hover: fade controls overlay on the video area in/out.
+        const hoverOverlay = document.createElement('div');
+        hoverOverlay.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:' + VID_H + 'px;' +
+            'background:linear-gradient(transparent 60%,rgba(0,0,0,0.55));' +
+            'opacity:0;transition:opacity 0.2s;pointer-events:none;';
+        panel.appendChild(hoverOverlay);
+
+        let hideTimer = null;
+        const showCtrl = () => { clearTimeout(hideTimer); hoverOverlay.style.opacity = '1'; };
+        const scheduleHide = () => {
+            hideTimer = setTimeout(() => { hoverOverlay.style.opacity = '0'; }, 1500);
+        };
+        panel.addEventListener('mouseenter', showCtrl);
+        panel.addEventListener('mousemove',  showCtrl);
+        panel.addEventListener('mouseleave', scheduleHide);
+
+        // Drag — whole panel is the handle; disable video hole during drag.
+        const stopDrag = _pipDrag(
+            panel, panel,
+            () => { window.api.player.setVideoRectangle(0, 0, 0, 0); },
+            (nx, ny) => {
+                nx = Math.max(0, Math.min(window.innerWidth  - VID_W,    nx));
+                ny = Math.max(0, Math.min(window.innerHeight - PANEL_H, ny));
+                panel.style.left = nx + 'px'; panel.style.top = ny + 'px';
+            },
+            () => {
+                const snap = _pipCornerSnap(parseFloat(panel.style.left), parseFloat(panel.style.top), VID_W, PANEL_H);
+                if (snap) { panel.style.left = snap.x + 'px'; panel.style.top = snap.y + 'px'; }
+                _pipSavePos('jmp_pip_minimal_pos', parseFloat(panel.style.left), parseFloat(panel.style.top), VID_W, PANEL_H);
+                _pipUpdateVideoRect(videoArea);
+            }
+        );
+        panel._stopDrag = stopDrag;
+
+        _pipWireSignals(panel, null, null, 'jmp-pip-pause');
+
+        pauseBtn.addEventListener('click',  (e) => { e.stopPropagation(); if (playerState.paused) window.api.player.play(); else window.api.player.pause(); });
+        expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
+        stopBtn.addEventListener('click',   (e) => { e.stopPropagation(); window._nativeExitMiniPlayer(); window.api.player.stop(); });
+        gearBtn.addEventListener('click',   (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
+
+        const updateRect = () => _pipUpdateVideoRect(videoArea);
+        window.addEventListener('resize', updateRect);
+        panel._onResize = updateRect;
+
+        _pipCleanupPage();
+        document.body.appendChild(panel);
+        window._mpvMiniPlayerActive = true;
+        _pipUpdateVideoRect(videoArea);
+    }
+
+    // ── Public API ────────────────────────────────────────────────────────────
+    window._nativeEnterMiniPlayer = function() {
+        if (document.getElementById('jmp-pip-panel')) return;
+        const mode = localStorage.getItem('jmp_pip_mode') || 'bar';
+        if (mode === 'float')        _enterFloatMode();
+        else if (mode === 'minimal') _enterMinimalMode();
+        else                         _enterBarMode();
     };
 
     window._nativeExitMiniPlayer = function() {
-        const bar = document.getElementById('jmp-mini-bar');
-        if (!bar) {
-            window._mpvMiniPlayerActive = false;
-            return;
-        }
-        if (bar._onPaused)   window.api.player.paused.disconnect(bar._onPaused);
-        if (bar._onPlaying)  window.api.player.playing.disconnect(bar._onPlaying);
-        if (bar._onTimePos)  window.api.player.positionUpdate.disconnect(bar._onTimePos);
-        if (bar._onDuration) window.api.player.updateDuration.disconnect(bar._onDuration);
-        if (bar._onResize)   window.removeEventListener('resize', bar._onResize);
-        if (bar.parentNode)  bar.parentNode.removeChild(bar);
-        const st = document.getElementById('jmp-mini-bar-style');
+        const panel = document.getElementById('jmp-pip-panel');
+        if (!panel) { window._mpvMiniPlayerActive = false; return; }
+        _pipUnwireSignals(panel);
+        if (panel._onResize)   window.removeEventListener('resize', panel._onResize);
+        if (panel._stopDrag)   panel._stopDrag();
+        if (panel._stopResize) panel._stopResize();
+        if (panel.parentNode)  panel.parentNode.removeChild(panel);
+        const st  = document.getElementById('jmp-pip-style');
         if (st && st.parentNode) st.parentNode.removeChild(st);
+        const pop = document.getElementById('jmp-pip-modepicker');
+        if (pop && pop.parentNode) pop.parentNode.removeChild(pop);
         window._mpvMiniPlayerActive = false;
         const player = window._mpvVideoPlayerInstance;
         if (player) player._isMiniPlayer = false;
