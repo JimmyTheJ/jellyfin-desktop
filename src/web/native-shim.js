@@ -727,7 +727,10 @@
         // CONTENT_H: content row height (video + info + controls).
         const SEEK_H = 20, CONTENT_H = 96;
         const BAR_H = SEEK_H + CONTENT_H;
-        const VID_HOLE_W = 152, VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
+        // Hole height is fixed; width derived from actual video aspect so mpv fills the hole
+        // without pillarboxing/letterboxing.
+        const VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
+        const VID_HOLE_W = Math.round(VID_HOLE_H * _pipGetVideoAspect());
         const WRAPPER_W = VID_HOLE_W + VID_PAD_X * 2;
 
         const panel = document.createElement('div');
@@ -852,7 +855,9 @@
         const MIN_H = TITLE_H + Math.round(MIN_W / aspect) + SEEK_H + CTRL_H;
         const saved = _pipLoadPos('jmp_pip_float_pos');
         const W  = saved ? saved.w : 320;
-        const H  = saved ? saved.h : TITLE_H + Math.round(W / aspect) + SEEK_H + CTRL_H;
+        // Always derive H from the current video's aspect ratio, even when restoring a saved
+        // position. A saved height from a previous 16:9 video would cause pillarboxing on 4:3.
+        const H  = TITLE_H + Math.round(W / aspect) + SEEK_H + CTRL_H;
         const px = saved ? saved.x : window.innerWidth  - W - 16;
         const py = saved ? saved.y : window.innerHeight - H - 16;
 
@@ -932,12 +937,15 @@
         stopBtn.style.fontSize = '13px'; stopBtn.style.padding = '4px 7px';
         const gearBtn = _pipMkBtn('\u2699', 'PiP mode (Ctrl+Shift+M)');
         gearBtn.style.fontSize = '13px'; gearBtn.style.padding = '4px 7px';
+        const arBtn = _pipMkBtn('\u21BA', 'Reset to video aspect ratio');
+        arBtn.style.fontSize = '14px'; arBtn.style.padding = '4px 7px';
 
         controls.appendChild(pauseBtn);
         controls.appendChild(timeEl);
         controls.appendChild(expandBtn);
         controls.appendChild(cornerBtn);
         controls.appendChild(pinBtn);
+        controls.appendChild(arBtn);
         controls.appendChild(stopBtn);
         controls.appendChild(gearBtn);
         panel.appendChild(controls);
@@ -1017,6 +1025,20 @@
         gearBtn.addEventListener('click',   (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
         cornerBtn.addEventListener('click', (e) => { e.stopPropagation(); applyCorner(CORNERS[(CORNERS.indexOf(panel._corner) + 1) % CORNERS.length]); });
         pinBtn.addEventListener('click',    (e) => { e.stopPropagation(); applyPin(!panel._isPinned); });
+        arBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const asp = _pipGetVideoAspect();
+            const cw = panel.offsetWidth;
+            const newH = Math.max(MIN_H, TITLE_H + Math.round(cw / asp) + SEEK_H + CTRL_H);
+            // Clamp top so panel doesn't go off-screen after height change.
+            const newTop = Math.min(parseFloat(panel.style.top) || 0, window.innerHeight - newH);
+            panel.style.height = newH + 'px';
+            panel.style.top = newTop + 'px';
+            panel.style.bottom = 'auto';
+            const r = panel.getBoundingClientRect();
+            _pipSavePos('jmp_pip_float_pos', r.left, r.top, r.width, r.height);
+            _pipUpdateVideoRect(videoArea);
+        });
 
         const updateRect = () => {
             if (panel._isPinned) applyPinPos(); else _pipUpdateVideoRect(videoArea);
@@ -1089,10 +1111,13 @@
         stopBtn.style.fontSize = '12px'; stopBtn.style.padding = '4px 7px';
         const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
         gearBtn.style.fontSize = '12px'; gearBtn.style.padding = '4px 7px';
+        const arBtn = _pipMkBtn('\u21BA', 'Reset to video aspect ratio');
+        arBtn.style.fontSize = '13px'; arBtn.style.padding = '4px 7px';
 
         btnRow.appendChild(pauseBtn);
         btnRow.appendChild(spacer);
         btnRow.appendChild(expandBtn);
+        btnRow.appendChild(arBtn);
         btnRow.appendChild(stopBtn);
         btnRow.appendChild(gearBtn);
         ctrlStrip.appendChild(btnRow);
@@ -1142,6 +1167,19 @@
         expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
         stopBtn.addEventListener('click',   (e) => { e.stopPropagation(); window._nativeExitMiniPlayer(); window.api.player.stop(); });
         gearBtn.addEventListener('click',   (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
+        arBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const asp = _pipGetVideoAspect();
+            const newVidH = Math.round(VID_W / asp);
+            const newPanelH = newVidH + CTRL_H;
+            const newTop = Math.min(parseFloat(panel.style.top) || 0, window.innerHeight - newPanelH);
+            panel.style.height = newPanelH + 'px';
+            panel.style.top = newTop + 'px';
+            videoArea.style.height = newVidH + 'px';
+            hoverOverlay.style.height = newVidH + 'px';
+            _pipSavePos('jmp_pip_minimal_pos', parseFloat(panel.style.left), newTop, VID_W, newPanelH);
+            _pipUpdateVideoRect(videoArea);
+        });
 
         const updateRect = () => _pipUpdateVideoRect(videoArea);
         window.addEventListener('resize', updateRect);
