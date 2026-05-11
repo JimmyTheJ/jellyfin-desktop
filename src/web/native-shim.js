@@ -906,7 +906,7 @@
             panel._corner = corner;
             cornerBtn.textContent = CORNER_ICONS[corner];
             cornerBtn.title = CORNER_TIPS[corner] + ' (Ctrl+Shift+C)';
-            if (panel._isPinned) applyPinPos();
+            applyPinPos();  // always snap, whether pinned or not
         };
 
         const applyPin = (pinned) => {

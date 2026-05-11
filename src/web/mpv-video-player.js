@@ -134,7 +134,16 @@
             if (options.fullscreen) this.loading.show();  // fills entire web content area, not the actual screen
             await this.createMediaElement(options);
             console.log('[Media] [MPV] createMediaElement done, calling setCurrentSrc');
-            return await this.setCurrentSrc(options);
+            const result = await this.setCurrentSrc(options);
+            // If autoplay triggered while PiP was active, refresh the panel now that
+            // _currentPlayOptions is populated with the new item's metadata.
+            if (this._pipReenterAfterPlay) {
+                this._pipReenterAfterPlay = false;
+                window._nativeExitMiniPlayer();
+                this._isMiniPlayer = true;
+                window._nativeEnterMiniPlayer();
+            }
+            return result;
         }
 
         setCurrentSrc(options) {
@@ -223,6 +232,9 @@
         }
 
         onEndedInternal() {
+            // If PiP is active, flag the next createMediaElement call as autoplay so
+            // the panel stays alive for the next track instead of being torn down.
+            this._pipAutoplayPending = !!this._isMiniPlayer;
             this.events.trigger(this, 'stopped', [{ src: this._currentSrc }]);
             this._core._currentTime = null;
             this._currentSrc = null;
@@ -284,11 +296,20 @@
         }
 
         createMediaElement(options) {
-            // If new media starts while the mini bar is active, close it first so
-            // the new video takes over in full-screen mode.
+            // If new media starts while the mini bar is active, decide whether to
+            // keep PiP or exit based on whether this is an autoplay continuation.
             if (window._mpvMiniPlayerActive) {
-                window._nativeExitMiniPlayer();
-                this._isMiniPlayer = false;
+                if (this._pipAutoplayPending) {
+                    // Autoplay next track: stay in PiP. Panel will be refreshed
+                    // after setCurrentSrc() sets the new _currentPlayOptions.
+                    this._pipAutoplayPending = false;
+                    this._pipReenterAfterPlay = true;
+                } else {
+                    // User explicitly started new media from the menu — exit PiP so
+                    // the new video takes over in full-screen mode.
+                    window._nativeExitMiniPlayer();
+                    this._isMiniPlayer = false;
+                }
             }
             let dlg = document.querySelector('.videoPlayerContainer');
             if (!dlg) {
