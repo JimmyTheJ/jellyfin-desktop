@@ -579,9 +579,31 @@
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
         ].join(';');
 
-        const ar = anchorEl.getBoundingClientRect();
-        pop.style.bottom = (window.innerHeight - ar.top + 8) + 'px';
-        pop.style.right  = (window.innerWidth  - ar.right)  + 'px';
+        const ar  = anchorEl.getBoundingClientRect();
+        const POP_H = 150; // conservative estimate of popover height
+
+        // The ClearView hole sits inside the PiP panel, so the popover must land
+        // OUTSIDE the panel bounds to avoid being alpha-zeroed by ClearView.
+        // Bar mode: hole is bottom-left; opening upward puts us in the safe main
+        //   content area — keep the existing behavior.
+        // Float/minimal: hole is inside the panel; open BELOW the panel if there
+        //   is room, otherwise open ABOVE the panel top edge.
+        const mode = localStorage.getItem('jmp_pip_mode') || 'bar';
+        if (mode !== 'bar') {
+            const panel = document.getElementById('jmp-pip-panel');
+            const pr    = panel ? panel.getBoundingClientRect() : ar;
+            if (pr.bottom + POP_H + 12 <= window.innerHeight) {
+                // Enough room below the panel — safe, no hole here.
+                pop.style.top = (pr.bottom + 8) + 'px';
+            } else {
+                // Open above the panel top — also outside the hole.
+                pop.style.bottom = (window.innerHeight - pr.top + 8) + 'px';
+            }
+        } else {
+            // Bar mode: open upward into the main content area (no hole there).
+            pop.style.bottom = (window.innerHeight - ar.top + 8) + 'px';
+        }
+        pop.style.right = Math.max(4, window.innerWidth - ar.right) + 'px';
 
         for (const m of MODES) {
             const active = m.key === cur;
@@ -947,7 +969,7 @@
             'position:fixed',
             'left:' + px + 'px', 'top:' + py + 'px',
             'width:' + VID_W + 'px', 'height:' + PANEL_H + 'px',
-            'z-index:10000', 'cursor:move',
+            'z-index:10000',
             'border-radius:6px', 'overflow:hidden',
             'box-shadow:0 4px 20px rgba(0,0,0,0.6)',
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
@@ -1004,9 +1026,10 @@
 
         panel._videoArea = videoArea;
 
-        // Drag — live video rect update; whole panel is the handle.
+        // Drag — only the video area is the drag handle so ctrlStrip buttons get clean clicks.
+        videoArea.style.cursor = 'move';
         const stopDrag = _pipDrag(
-            panel, panel,
+            panel, videoArea,
             null,
             (nx, ny) => {
                 nx = Math.max(0, Math.min(window.innerWidth  - VID_W,    nx));
