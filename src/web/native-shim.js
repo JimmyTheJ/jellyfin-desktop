@@ -347,6 +347,16 @@
 
     // ─── PiP mini-player ─────────────────────────────────────────────────────
     window._mpvMiniPlayerActive = false;
+    // Authoritative display aspect ratio from mpv (video-params/aspect).
+    // 0 = not yet received; falls back to metadata or 16:9 in that case.
+    window._pipVideoAspect = 0;
+    window._nativeUpdateVideoAspect = function(ratio) {
+        if (!(ratio > 0)) return;
+        window._pipVideoAspect = ratio;
+        // If a PiP panel is active, refresh its geometry to the correct AR.
+        const panel = document.getElementById('jmp-pip-panel');
+        if (panel && panel._refreshAspect) panel._refreshAspect(ratio);
+    };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 
@@ -365,6 +375,8 @@
     // Returns the display aspect ratio (width/height) of the current video stream,
     // falling back to 16:9 if metadata is unavailable.
     function _pipGetVideoAspect() {
+        // Prefer the authoritative value from mpv (video-params/aspect).
+        if (window._pipVideoAspect > 0) return window._pipVideoAspect;
         try {
             const item = _pipGetItem();
             if (item && item.MediaSources) {
@@ -1028,7 +1040,19 @@
         );
         panel._stopResize = stopResize;
 
-        videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+        // Called by _nativeUpdateVideoAspect when mpv reports a new display AR.
+        // Resizes the panel height to match the new ratio while keeping width constant.
+        panel._refreshAspect = (ratio) => {
+            const cw = panel.offsetWidth;
+            const newH = Math.max(MIN_H, TITLE_H + Math.round(cw / ratio) + SEEK_H + CTRL_H);
+            const newTop = Math.min(parseFloat(panel.style.top) || 0, window.innerHeight - newH);
+            panel.style.height = newH + 'px';
+            panel.style.top = newTop + 'px';
+            panel.style.bottom = 'auto';
+            const r = panel.getBoundingClientRect();
+            _pipSavePos('jmp_pip_float_pos', r.left, r.top, r.width, r.height);
+            if (panel._isPinned) applyPinPos(); else _pipUpdateVideoRect(videoArea);
+        };
 
         _pipWireSignals(panel, seekBar._fill, timeEl, 'jmp-pip-pause');
 
@@ -1173,6 +1197,19 @@
             }
         );
         panel._stopDrag = stopDrag;
+
+        // Called by _nativeUpdateVideoAspect when mpv reports a new display AR.
+        panel._refreshAspect = (ratio) => {
+            const newVidH = Math.round(VID_W / ratio);
+            const newPanelH = newVidH + CTRL_H;
+            const newTop = Math.min(parseFloat(panel.style.top) || 0, window.innerHeight - newPanelH);
+            panel.style.height = newPanelH + 'px';
+            panel.style.top = newTop + 'px';
+            videoArea.style.height = newVidH + 'px';
+            hoverOverlay.style.height = newVidH + 'px';
+            _pipSavePos('jmp_pip_minimal_pos', parseFloat(panel.style.left), newTop, VID_W, newPanelH);
+            _pipUpdateVideoRect(videoArea);
+        };
 
         _pipWireSignals(panel, seekBar._fill, null, 'jmp-pip-pause');
 

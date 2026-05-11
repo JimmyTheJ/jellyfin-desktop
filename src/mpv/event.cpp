@@ -63,6 +63,7 @@ void observe_properties(MpvHandle& mpv) {
     mpv.ObservePropertyDouble(MPV_OBSERVE_DISPLAY_FPS, "display-fps");
     mpv.ObservePropertyNode(MPV_OBSERVE_CACHE_STATE, "demuxer-cache-state");
     mpv.ObservePropertyFlag(MPV_OBSERVE_WINDOW_MAX, "window-maximized");
+    mpv.ObservePropertyDouble(MPV_OBSERVE_VIDEO_ASPECT, "video-params/aspect");
 }
 
 MpvEvent digest_property(uint64_t id, mpv_event_property* p) {
@@ -138,6 +139,11 @@ MpvEvent digest_property(uint64_t id, mpv_event_property* p) {
         if (p->format != MPV_FORMAT_DOUBLE) break;
         s_display_scale.store(*static_cast<double*>(p->data),
                               std::memory_order_relaxed);
+        break;
+    case MPV_OBSERVE_VIDEO_ASPECT:
+        if (p->format != MPV_FORMAT_DOUBLE) break;
+        ev.type = MpvEventType::VIDEO_ASPECT;
+        ev.dbl = *static_cast<double*>(p->data);
         break;
     case MPV_OBSERVE_DISPLAY_FPS: {
         if (p->format != MPV_FORMAT_DOUBLE) break;
