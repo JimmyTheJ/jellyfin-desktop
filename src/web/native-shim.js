@@ -399,7 +399,58 @@
         return b;
     }
 
-    // Drag panel via handleEl. onMove(x,y) is RAF-throttled; onEnd() on mouseup.
+    // Seekable progress bar. Returns the element; ._fill is the fill div consumed
+    // by _pipWireSignals. Expands track on hover; supports click-to-seek and drag.
+    function _pipMkSeekBar(panel, extraCss) {
+        const outer = document.createElement('div');
+        outer.style.cssText = 'position:relative;cursor:pointer;' + (extraCss || '');
+
+        const track = document.createElement('div');
+        track.style.cssText = 'position:absolute;left:8px;right:8px;top:50%;' +
+            'transform:translateY(-50%);height:4px;background:rgba(255,255,255,0.2);' +
+            'border-radius:2px;overflow:hidden;pointer-events:none;transition:height 0.1s;';
+
+        const fill = document.createElement('div');
+        fill.style.cssText = 'height:100%;width:0%;background:#00a4dc;pointer-events:none;' +
+            'transition:width 0.8s linear;';
+        track.appendChild(fill);
+        outer.appendChild(track);
+
+        outer.addEventListener('mouseenter', () => track.style.height = '6px');
+        outer.addEventListener('mouseleave', () => { if (!outer._seeking) track.style.height = '4px'; });
+
+        const doSeek = (clientX) => {
+            const r = outer.getBoundingClientRect();
+            const frac = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+            const dur = panel._duration || 0;
+            if (dur <= 0) return;
+            fill.style.transition = 'none';
+            fill.style.width = (frac * 100) + '%';
+            requestAnimationFrame(() => { fill.style.transition = 'width 0.8s linear'; });
+            window.api.input.positionSeek(frac * dur);
+        };
+
+        outer.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault(); e.stopPropagation();
+            outer._seeking = true;
+            track.style.height = '6px';
+            doSeek(e.clientX);
+            const onMove = (ev) => doSeek(ev.clientX);
+            const onUp = () => {
+                outer._seeking = false;
+                track.style.height = '4px';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        outer._fill = fill;
+        return outer;
+    }
+
     // Optional canDrag() fn: if it returns false, drag is suppressed. Returns cleanup fn.
     function _pipDrag(panel, handleEl, onStart, onMove, onEnd, canDrag) {
         let active = false, started = false, sx = 0, sy = 0, ox = 0, oy = 0, rafId = null;
@@ -672,7 +723,11 @@
 
     // ── Bottom bar mode ───────────────────────────────────────────────────────
     function _enterBarMode() {
-        const BAR_H = 96, VID_HOLE_W = 152, VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
+        // SEEK_H: full-width seek zone at top of bar (outside ClearView zone).
+        // CONTENT_H: content row height (video + info + controls).
+        const SEEK_H = 20, CONTENT_H = 96;
+        const BAR_H = SEEK_H + CONTENT_H;
+        const VID_HOLE_W = 152, VID_HOLE_H = 84, VID_PAD_X = 8, VID_PAD_Y = 6;
         const WRAPPER_W = VID_HOLE_W + VID_PAD_X * 2;
 
         const panel = document.createElement('div');
@@ -681,31 +736,26 @@
             'position:fixed', 'bottom:0', 'left:0', 'right:0', 'height:' + BAR_H + 'px',
             'background:rgba(10,10,10,0.93)',
             'border-top:1px solid rgba(255,255,255,0.10)',
-            'z-index:10000', 'display:flex', 'align-items:center',
+            'z-index:10000', 'display:flex', 'flex-direction:column',
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
             'box-sizing:border-box',
         ].join(';');
 
-        // Full-width progress bar at very bottom — below ClearView zone.
-        const progressBg = document.createElement('div');
-        progressBg.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:3px;' +
-            'background:rgba(255,255,255,0.15);overflow:hidden;cursor:pointer;z-index:1;';
-        const progressFill = document.createElement('div');
-        progressFill.style.cssText = 'height:100%;background:#00a4dc;width:0%;pointer-events:none;' +
-            'transition:width 0.8s linear;';
-        progressBg.appendChild(progressFill);
-        panel.appendChild(progressBg);
-        progressBg.addEventListener('click', (e) => {
-            const r = progressBg.getBoundingClientRect();
-            const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-            const dur = panel._duration || 0;
-            if (dur > 0) window.api.input.positionSeek(frac * dur);
-        });
+        // Seek bar spanning full width — sits above the ClearView hole, 20px hit area.
+        const seekBar = _pipMkSeekBar(panel,
+            'height:' + SEEK_H + 'px;flex-shrink:0;' +
+            'border-bottom:1px solid rgba(255,255,255,0.07);');
+        panel.appendChild(seekBar);
+
+        // Content row: video thumbnail + info + controls.
+        const contentRow = document.createElement('div');
+        contentRow.style.cssText = 'display:flex;align-items:center;flex:1;min-height:0;';
+        panel.appendChild(contentRow);
 
         // Video wrapper with padding — inner div is the transparent ClearView hole.
         const videoWrapper = document.createElement('div');
         videoWrapper.style.cssText = [
-            'width:' + WRAPPER_W + 'px', 'height:' + BAR_H + 'px', 'flex-shrink:0',
+            'width:' + WRAPPER_W + 'px', 'height:' + CONTENT_H + 'px', 'flex-shrink:0',
             'display:flex', 'align-items:center', 'justify-content:center',
             'border-right:1px solid rgba(255,255,255,0.08)',
             'box-sizing:border-box', 'cursor:pointer',
@@ -716,7 +766,7 @@
         videoArea.style.cssText = 'width:' + VID_HOLE_W + 'px;height:' + VID_HOLE_H + 'px;' +
             'background:transparent;flex-shrink:0;';
         videoWrapper.appendChild(videoArea);
-        panel.appendChild(videoWrapper);
+        contentRow.appendChild(videoWrapper);
         panel._videoArea = videoArea;
 
         // Info: three stacked rows (show name / episode / time).
@@ -730,7 +780,7 @@
         const timeEl     = document.createElement('div');
         timeEl.style.cssText     = 'color:rgba(255,255,255,0.45);font-size:11px;white-space:nowrap;';
         info.appendChild(titleEl); info.appendChild(subtitleEl); info.appendChild(timeEl);
-        panel.appendChild(info);
+        contentRow.appendChild(info);
         _pipPopulateItem(panel, titleEl, subtitleEl);
 
         // Controls.
@@ -764,9 +814,9 @@
         controls.appendChild(expandBtn);
         controls.appendChild(stopBtn);
         controls.appendChild(gearBtn);
-        panel.appendChild(controls);
+        contentRow.appendChild(controls);
 
-        _pipWireSignals(panel, progressFill, timeEl, 'jmp-pip-pause');
+        _pipWireSignals(panel, seekBar._fill, timeEl, 'jmp-pip-pause');
 
         pauseBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -797,12 +847,12 @@
 
     // ── Floating panel mode ───────────────────────────────────────────────────
     function _enterFloatMode() {
-        const TITLE_H = 34, CTRL_H = 36, MIN_W = 220;
+        const TITLE_H = 34, CTRL_H = 36, SEEK_H = 18, MIN_W = 220;
         const aspect = _pipGetVideoAspect();
-        const MIN_H = TITLE_H + Math.round(MIN_W / aspect) + CTRL_H;
+        const MIN_H = TITLE_H + Math.round(MIN_W / aspect) + SEEK_H + CTRL_H;
         const saved = _pipLoadPos('jmp_pip_float_pos');
         const W  = saved ? saved.w : 320;
-        const H  = saved ? saved.h : TITLE_H + Math.round(W / aspect) + CTRL_H;
+        const H  = saved ? saved.h : TITLE_H + Math.round(W / aspect) + SEEK_H + CTRL_H;
         const px = saved ? saved.x : window.innerWidth  - W - 16;
         const py = saved ? saved.y : window.innerHeight - H - 16;
 
@@ -840,6 +890,12 @@
         videoArea.style.cssText = 'flex:1;background:transparent;min-height:0;';
         panel.appendChild(videoArea);
         panel._videoArea = videoArea;
+
+        // Seek bar between video and controls — full-width, 18px hit area, outside ClearView hole.
+        const seekBar = _pipMkSeekBar(panel,
+            'height:' + SEEK_H + 'px;flex-shrink:0;z-index:3;background:rgba(12,12,12,0.95);' +
+            'border-top:1px solid rgba(255,255,255,0.07);');
+        panel.appendChild(seekBar);
 
         // Controls bar — position:relative;z-index:3 ensures clicks land on buttons, not resize handles.
         const controls = document.createElement('div');
@@ -953,7 +1009,7 @@
 
         videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); });
 
-        _pipWireSignals(panel, null, timeEl, 'jmp-pip-pause');
+        _pipWireSignals(panel, seekBar._fill, timeEl, 'jmp-pip-pause');
 
         pauseBtn.addEventListener('click',  (e) => { e.stopPropagation(); if (playerState.paused) window.api.player.play(); else window.api.player.pause(); });
         expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
@@ -978,7 +1034,8 @@
     function _enterMinimalMode() {
         // Use the video's actual aspect ratio so the hole matches exactly — no black bars.
         const aspect = _pipGetVideoAspect();
-        const CTRL_H = 36, VID_W = 320, VID_H = Math.round(VID_W / aspect);
+        const BTN_H = 36, SEEK_H = 16, CTRL_H = SEEK_H + BTN_H;
+        const VID_W = 320, VID_H = Math.round(VID_W / aspect);
         const PANEL_H = VID_H + CTRL_H;
         const saved = _pipLoadPos('jmp_pip_minimal_pos');
         const px = saved ? saved.x : window.innerWidth  - VID_W - 16;
@@ -1003,10 +1060,21 @@
         panel.appendChild(videoArea);
 
         // Controls strip below the video hole — always opaque, so ClearView doesn't touch it.
+        // Column layout: seek bar at top (SEEK_H), buttons row at bottom (BTN_H).
         const ctrlStrip = document.createElement('div');
         ctrlStrip.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:' + CTRL_H + 'px;' +
-            'background:rgba(10,10,10,0.93);display:flex;align-items:center;padding:0 4px;gap:0;' +
+            'background:rgba(10,10,10,0.93);display:flex;flex-direction:column;' +
             'border-top:1px solid rgba(255,255,255,0.08);';
+
+        // Seek bar inside ctrlStrip — full width, 16px hit area.
+        const seekBar = _pipMkSeekBar(panel,
+            'height:' + SEEK_H + 'px;flex-shrink:0;' +
+            'border-bottom:1px solid rgba(255,255,255,0.06);');
+        ctrlStrip.appendChild(seekBar);
+
+        // Buttons row.
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'flex:1;display:flex;align-items:center;padding:0 4px;gap:0;';
 
         const pauseBtn  = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
         pauseBtn.id = 'jmp-pip-pause';
@@ -1022,11 +1090,12 @@
         const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
         gearBtn.style.fontSize = '12px'; gearBtn.style.padding = '4px 7px';
 
-        ctrlStrip.appendChild(pauseBtn);
-        ctrlStrip.appendChild(spacer);
-        ctrlStrip.appendChild(expandBtn);
-        ctrlStrip.appendChild(stopBtn);
-        ctrlStrip.appendChild(gearBtn);
+        btnRow.appendChild(pauseBtn);
+        btnRow.appendChild(spacer);
+        btnRow.appendChild(expandBtn);
+        btnRow.appendChild(stopBtn);
+        btnRow.appendChild(gearBtn);
+        ctrlStrip.appendChild(btnRow);
         panel.appendChild(ctrlStrip);
 
         // Hover: fade controls overlay on the video area in/out.
@@ -1067,7 +1136,7 @@
         );
         panel._stopDrag = stopDrag;
 
-        _pipWireSignals(panel, null, null, 'jmp-pip-pause');
+        _pipWireSignals(panel, seekBar._fill, null, 'jmp-pip-pause');
 
         pauseBtn.addEventListener('click',  (e) => { e.stopPropagation(); if (playerState.paused) window.api.player.play(); else window.api.player.pause(); });
         expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
