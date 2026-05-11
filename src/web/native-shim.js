@@ -381,12 +381,13 @@
         return b;
     }
 
-    // Drag panel via handleEl. onStart() called once on first move; onMove(x,y) RAF-throttled;
-    // onEnd() called on mouseup. Returns cleanup fn.
-    function _pipDrag(panel, handleEl, onStart, onMove, onEnd) {
+    // Drag panel via handleEl. onMove(x,y) is RAF-throttled; onEnd() on mouseup.
+    // Optional canDrag() fn: if it returns false, drag is suppressed. Returns cleanup fn.
+    function _pipDrag(panel, handleEl, onStart, onMove, onEnd, canDrag) {
         let active = false, started = false, sx = 0, sy = 0, ox = 0, oy = 0, rafId = null;
         const onDown = (e) => {
             if (e.button !== 0) return;
+            if (canDrag && !canDrag()) return;
             const r = panel.getBoundingClientRect();
             active = true; started = false;
             sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
@@ -416,9 +417,9 @@
         };
     }
 
-    // Attach 4-corner resize handles to panel. onEnd() called after each resize gesture.
-    // Returns cleanup fn.
-    function _pipResize(panel, minW, minH, onEnd) {
+    // Attach 4-corner resize handles to panel. onMove() called each RAF frame during resize;
+    // onEnd() called after each resize gesture. Returns cleanup fn.
+    function _pipResize(panel, minW, minH, onMove, onEnd) {
         const SZ = 14;
         const dirs = ['nw', 'ne', 'sw', 'se'];
         const cursors = { nw: 'nw-resize', ne: 'ne-resize', sw: 'sw-resize', se: 'se-resize' };
@@ -451,6 +452,7 @@
                     panel.style.left = l + 'px'; panel.style.top = t + 'px';
                     panel.style.width = w + 'px'; panel.style.height = ht + 'px';
                     panel.style.right = 'auto'; panel.style.bottom = 'auto';
+                    if (onMove) onMove();
                 });
             };
             const onUp = () => {
@@ -675,6 +677,7 @@
             'background:transparent;flex-shrink:0;';
         videoWrapper.appendChild(videoArea);
         panel.appendChild(videoWrapper);
+        panel._videoArea = videoArea;
 
         // Info: three stacked rows (show name / episode / time).
         const info = document.createElement('div');
@@ -776,11 +779,12 @@
             'box-sizing:border-box',
         ].join(';');
 
-        // Drag handle / title bar.
+        // Title bar is the drag handle. position:relative;z-index:3 keeps it above resize handles.
         const titleBar = document.createElement('div');
         titleBar.style.cssText = 'height:' + TITLE_H + 'px;flex-shrink:0;display:flex;' +
             'align-items:center;padding:0 10px;cursor:move;gap:6px;overflow:hidden;' +
-            'border-bottom:1px solid rgba(255,255,255,0.07);user-select:none;';
+            'border-bottom:1px solid rgba(255,255,255,0.07);user-select:none;' +
+            'position:relative;z-index:3;background:rgba(12,12,12,0.95);';
         const titleEl    = document.createElement('div');
         titleEl.style.cssText    = 'flex:1;font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
         const subtitleEl = document.createElement('div');
@@ -789,17 +793,19 @@
         panel.appendChild(titleBar);
         _pipPopulateItem(panel, titleEl, subtitleEl);
 
-        // Transparent video hole — fills the space between title bar and controls.
+        // Transparent video hole.
         const videoArea = document.createElement('div');
         videoArea.style.cssText = 'flex:1;background:transparent;min-height:0;';
         panel.appendChild(videoArea);
+        panel._videoArea = videoArea;
 
-        // Controls bar.
+        // Controls bar — position:relative;z-index:3 ensures clicks land on buttons, not resize handles.
         const controls = document.createElement('div');
         controls.style.cssText = 'height:' + CTRL_H + 'px;flex-shrink:0;display:flex;' +
-            'align-items:center;padding:0 4px;border-top:1px solid rgba(255,255,255,0.07);gap:0;';
+            'align-items:center;padding:0 4px;border-top:1px solid rgba(255,255,255,0.07);gap:0;' +
+            'position:relative;z-index:3;background:rgba(12,12,12,0.95);';
 
-        const pauseBtn  = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        const pauseBtn = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
         pauseBtn.id = 'jmp-pip-pause';
         pauseBtn.style.fontSize = '16px'; pauseBtn.style.padding = '4px 8px';
 
@@ -809,51 +815,77 @@
         const expandBtn = _pipMkBtn('\u26F6', 'Restore full player');
         expandBtn.style.fontSize = '14px'; expandBtn.style.padding = '4px 7px';
 
-        const PIN_STATES = ['free', 'br', 'bl', 'tr', 'tl'];
-        const PIN_ICONS  = { free: '\uD83D\uDCCC', br: '\u2198', bl: '\u2199', tr: '\u2197', tl: '\u2196' };
-        const PIN_TIPS   = { free: 'Pin to corner', br: 'Pinned: bottom-right', bl: 'Pinned: bottom-left', tr: 'Pinned: top-right', tl: 'Pinned: top-left' };
-        panel._pinState = 'free';
-        const pinBtn = _pipMkBtn(PIN_ICONS.free, PIN_TIPS.free);
+        // Corner button: cycles br → bl → tr → tl → br.
+        const CORNERS      = ['br', 'bl', 'tr', 'tl'];
+        const CORNER_ICONS = { br: '\u2198', bl: '\u2199', tr: '\u2197', tl: '\u2196' };
+        const CORNER_TIPS  = { br: 'Corner: bottom-right', bl: 'Corner: bottom-left', tr: 'Corner: top-right', tl: 'Corner: top-left' };
+        panel._corner = 'br';
+        const cornerBtn = _pipMkBtn(CORNER_ICONS.br, CORNER_TIPS.br + ' (Ctrl+Shift+C)');
+        cornerBtn.style.fontSize = '15px'; cornerBtn.style.padding = '4px 7px';
+        panel._pipCornerBtn = cornerBtn;
+
+        // Pin button: toggles locked-to-corner. When pinned, drag is disabled.
+        panel._isPinned = false;
+        const pinBtn = _pipMkBtn('\uD83D\uDCCC', 'Pin to corner (Ctrl+Shift+L)');
         pinBtn.style.fontSize = '13px'; pinBtn.style.padding = '4px 7px';
+        panel._pipPinBtn = pinBtn;
 
         const stopBtn = _pipMkBtn('\u2715', 'Stop playback');
         stopBtn.style.fontSize = '13px'; stopBtn.style.padding = '4px 7px';
-        const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
+        const gearBtn = _pipMkBtn('\u2699', 'PiP mode (Ctrl+Shift+M)');
         gearBtn.style.fontSize = '13px'; gearBtn.style.padding = '4px 7px';
 
         controls.appendChild(pauseBtn);
         controls.appendChild(timeEl);
         controls.appendChild(expandBtn);
+        controls.appendChild(cornerBtn);
         controls.appendChild(pinBtn);
         controls.appendChild(stopBtn);
         controls.appendChild(gearBtn);
         panel.appendChild(controls);
 
-        // Helpers for pinning.
-        const applyPin = (state) => {
-            panel._pinState = state;
-            pinBtn.textContent = PIN_ICONS[state];
-            pinBtn.title = PIN_TIPS[state];
-            if (state === 'free') return;
-            const M = 16;
-            const pw = panel.offsetWidth, ph = panel.offsetHeight;
-            if (state === 'br') { panel.style.left = (window.innerWidth  - pw - M) + 'px'; panel.style.top = (window.innerHeight - ph - M) + 'px'; }
-            if (state === 'bl') { panel.style.left = M + 'px';                              panel.style.top = (window.innerHeight - ph - M) + 'px'; }
-            if (state === 'tr') { panel.style.left = (window.innerWidth  - pw - M) + 'px'; panel.style.top = M + 'px'; }
-            if (state === 'tl') { panel.style.left = M + 'px';                             panel.style.top = M + 'px'; }
+        // Apply the current corner position when pinned.
+        const applyPinPos = () => {
+            const M = 16, pw = panel.offsetWidth, ph = panel.offsetHeight;
+            const ww = window.innerWidth, wh = window.innerHeight;
+            const P = {
+                br: { l: ww - pw - M, t: wh - ph - M },
+                bl: { l: M,           t: wh - ph - M },
+                tr: { l: ww - pw - M, t: M },
+                tl: { l: M,           t: M },
+            };
+            const p = P[panel._corner] || P.br;
+            panel.style.left = p.l + 'px'; panel.style.top = p.t + 'px';
             panel.style.right = 'auto'; panel.style.bottom = 'auto';
             _pipUpdateVideoRect(videoArea);
         };
 
-        // Drag — disable video hole during drag to avoid mpv alignment lag.
+        const applyCorner = (corner) => {
+            panel._corner = corner;
+            cornerBtn.textContent = CORNER_ICONS[corner];
+            cornerBtn.title = CORNER_TIPS[corner] + ' (Ctrl+Shift+C)';
+            if (panel._isPinned) applyPinPos();
+        };
+
+        const applyPin = (pinned) => {
+            panel._isPinned = pinned;
+            pinBtn.textContent = pinned ? '\uD83D\uDD12' : '\uD83D\uDCCC';
+            pinBtn.title = (pinned ? 'Unpin' : 'Pin to corner') + ' (Ctrl+Shift+L)';
+            pinBtn.style.color = pinned ? '#00a4dc' : '';
+            titleBar.style.cursor = pinned ? 'default' : 'move';
+            if (pinned) applyPinPos();
+        };
+
+        // Drag — live video rect update on every frame; gated by !panel._isPinned.
         const stopDrag = _pipDrag(
             panel, titleBar,
-            () => { window.api.player.setVideoRectangle(0, 0, 0, 0); },
+            null,
             (nx, ny) => {
                 nx = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth,  nx));
                 ny = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, ny));
                 panel.style.left = nx + 'px'; panel.style.top = ny + 'px';
                 panel.style.right = 'auto'; panel.style.bottom = 'auto';
+                _pipUpdateVideoRect(videoArea);
             },
             () => {
                 const r = panel.getBoundingClientRect();
@@ -861,41 +893,35 @@
                 if (snap) { panel.style.left = snap.x + 'px'; panel.style.top = snap.y + 'px'; }
                 _pipSavePos('jmp_pip_float_pos', parseFloat(panel.style.left), parseFloat(panel.style.top), r.width, r.height);
                 _pipUpdateVideoRect(videoArea);
-            }
+            },
+            () => !panel._isPinned
         );
         panel._stopDrag = stopDrag;
 
-        // Resize — disable hole during resize, restore on end.
-        const stopResize = _pipResize(panel, MIN_W, MIN_H, () => {
-            const r = panel.getBoundingClientRect();
-            _pipSavePos('jmp_pip_float_pos', r.left, r.top, r.width, r.height);
-            _pipUpdateVideoRect(videoArea);
-        });
+        // Resize — live update during resize too.
+        const stopResize = _pipResize(panel, MIN_W, MIN_H,
+            () => { _pipUpdateVideoRect(videoArea); },
+            () => {
+                const r = panel.getBoundingClientRect();
+                _pipSavePos('jmp_pip_float_pos', r.left, r.top, r.width, r.height);
+                _pipUpdateVideoRect(videoArea);
+            }
+        );
         panel._stopResize = stopResize;
 
-        // During resize moves the hole rect must be cleared (same as drag).
-        // We temporarily zero the rect; _pipResize calls onEnd to restore it.
-        // To handle the continuous clearing during resize, intercept onMv via the
-        // videoArea itself: ClearView will show old position during resize, so hide it.
-        videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); }); // don't drag via video
+        videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); });
 
         _pipWireSignals(panel, null, timeEl, 'jmp-pip-pause');
 
-        pauseBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (playerState.paused) window.api.player.play(); else window.api.player.pause();
-        });
+        pauseBtn.addEventListener('click',  (e) => { e.stopPropagation(); if (playerState.paused) window.api.player.play(); else window.api.player.pause(); });
         expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
         stopBtn.addEventListener('click',   (e) => { e.stopPropagation(); window._nativeExitMiniPlayer(); window.api.player.stop(); });
         gearBtn.addEventListener('click',   (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
-        pinBtn.addEventListener('click',    (e) => {
-            e.stopPropagation();
-            applyPin(PIN_STATES[(PIN_STATES.indexOf(panel._pinState) + 1) % PIN_STATES.length]);
-        });
+        cornerBtn.addEventListener('click', (e) => { e.stopPropagation(); applyCorner(CORNERS[(CORNERS.indexOf(panel._corner) + 1) % CORNERS.length]); });
+        pinBtn.addEventListener('click',    (e) => { e.stopPropagation(); applyPin(!panel._isPinned); });
 
         const updateRect = () => {
-            if (panel._pinState !== 'free') applyPin(panel._pinState);
-            _pipUpdateVideoRect(videoArea);
+            if (panel._isPinned) applyPinPos(); else _pipUpdateVideoRect(videoArea);
         };
         window.addEventListener('resize', updateRect);
         panel._onResize = updateRect;
@@ -976,14 +1002,17 @@
         panel.addEventListener('mousemove',  showCtrl);
         panel.addEventListener('mouseleave', scheduleHide);
 
-        // Drag — whole panel is the handle; disable video hole during drag.
+        panel._videoArea = videoArea;
+
+        // Drag — live video rect update; whole panel is the handle.
         const stopDrag = _pipDrag(
             panel, panel,
-            () => { window.api.player.setVideoRectangle(0, 0, 0, 0); },
+            null,
             (nx, ny) => {
                 nx = Math.max(0, Math.min(window.innerWidth  - VID_W,    nx));
                 ny = Math.max(0, Math.min(window.innerHeight - PANEL_H, ny));
                 panel.style.left = nx + 'px'; panel.style.top = ny + 'px';
+                _pipUpdateVideoRect(videoArea);
             },
             () => {
                 const snap = _pipCornerSnap(parseFloat(panel.style.left), parseFloat(panel.style.top), VID_W, PANEL_H);
@@ -1037,6 +1066,71 @@
         if (player) player._isMiniPlayer = false;
         window.api.player.setVideoRectangle(0, 0, 0, 0);
     };
+
+    // ── Global PiP hotkeys ────────────────────────────────────────────────────
+    // All use Ctrl+Shift to avoid conflicts with normal app or OS shortcuts.
+    //   Ctrl+Shift+P     – toggle PiP on/off
+    //   Ctrl+Shift+M     – cycle PiP mode (bar → float → minimal → bar)
+    //   Ctrl+Shift+L     – toggle pin lock (float mode)
+    //   Ctrl+Shift+C     – cycle corner (float mode)
+    //   Ctrl+Shift+Arrow – move floating/minimal panel 20 px
+    (function() {
+        const MOVE_PX = 20;
+        const PIP_MODES = ['bar', 'float', 'minimal'];
+        document.addEventListener('keydown', function(e) {
+            if (!e.ctrlKey || !e.shiftKey) return;
+            const tgt = e.target;
+            if (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable) return;
+
+            const panel = document.getElementById('jmp-pip-panel');
+            const k = e.key;
+
+            if (k === 'P' || k === 'p') {
+                e.preventDefault();
+                if (window._mpvMiniPlayerActive) {
+                    window._nativeExitMiniPlayer();
+                } else {
+                    const pl = window._mpvVideoPlayerInstance;
+                    if (pl && typeof pl.togglePictureInPicture === 'function') pl.togglePictureInPicture();
+                    else window._nativeEnterMiniPlayer();
+                }
+                return;
+            }
+            if (k === 'M' || k === 'm') {
+                if (!panel) return;
+                e.preventDefault();
+                const cur = localStorage.getItem('jmp_pip_mode') || 'bar';
+                const next = PIP_MODES[(PIP_MODES.indexOf(cur) + 1) % PIP_MODES.length];
+                localStorage.setItem('jmp_pip_mode', next);
+                window._nativeExitMiniPlayer();
+                window._nativeEnterMiniPlayer();
+                return;
+            }
+            if (k === 'L' || k === 'l') {
+                if (panel && panel._pipPinBtn) { e.preventDefault(); panel._pipPinBtn.click(); }
+                return;
+            }
+            if (k === 'C' || k === 'c') {
+                if (panel && panel._pipCornerBtn) { e.preventDefault(); panel._pipCornerBtn.click(); }
+                return;
+            }
+            if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+                if (!panel || panel._isPinned) return;
+                const mode = localStorage.getItem('jmp_pip_mode') || 'bar';
+                if (mode === 'bar') return;
+                e.preventDefault();
+                const va = panel._videoArea;
+                const cl = parseFloat(panel.style.left) || 0;
+                const ct = parseFloat(panel.style.top)  || 0;
+                const pw = panel.offsetWidth, ph = panel.offsetHeight;
+                if (k === 'ArrowLeft')  panel.style.left = Math.max(0, cl - MOVE_PX) + 'px';
+                if (k === 'ArrowRight') panel.style.left = Math.min(window.innerWidth  - pw, cl + MOVE_PX) + 'px';
+                if (k === 'ArrowUp')    panel.style.top  = Math.max(0, ct - MOVE_PX) + 'px';
+                if (k === 'ArrowDown')  panel.style.top  = Math.min(window.innerHeight - ph, ct + MOVE_PX) + 'px';
+                if (va) _pipUpdateVideoRect(va);
+            }
+        });
+    })();
 
     // window.NativeShell - app info and plugins
     const plugins = ['mpvVideoPlayer', 'mpvAudioPlayer', 'inputPlugin'];
