@@ -362,6 +362,24 @@
         } catch (_) { return null; }
     }
 
+    // Returns the display aspect ratio (width/height) of the current video stream,
+    // falling back to 16:9 if metadata is unavailable.
+    function _pipGetVideoAspect() {
+        try {
+            const item = _pipGetItem();
+            if (item && item.MediaSources) {
+                for (const src of item.MediaSources) {
+                    if (!src.MediaStreams) continue;
+                    for (const s of src.MediaStreams) {
+                        if (s.Type === 'Video' && s.Width > 0 && s.Height > 0)
+                            return s.Width / s.Height;
+                    }
+                }
+            }
+        } catch (_) {}
+        return 16 / 9;
+    }
+
     function _pipUpdateVideoRect(videoArea) {
         const r = videoArea.getBoundingClientRect();
         window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height);
@@ -427,7 +445,7 @@
         for (const dir of dirs) {
             const h = document.createElement('div');
             h.style.cssText = 'position:absolute;width:' + SZ + 'px;height:' + SZ + 'px;' +
-                'cursor:' + cursors[dir] + ';z-index:2;' +
+                'cursor:' + cursors[dir] + ';z-index:4;' +
                 (dir[0] === 'n' ? 'top:0;' : 'bottom:0;') +
                 (dir[1] === 'w' ? 'left:0;' : 'right:0;');
             panel.appendChild(h);
@@ -779,10 +797,12 @@
 
     // ── Floating panel mode ───────────────────────────────────────────────────
     function _enterFloatMode() {
-        const TITLE_H = 34, CTRL_H = 36, MIN_W = 220, MIN_H = 180;
+        const TITLE_H = 34, CTRL_H = 36, MIN_W = 220;
+        const aspect = _pipGetVideoAspect();
+        const MIN_H = TITLE_H + Math.round(MIN_W / aspect) + CTRL_H;
         const saved = _pipLoadPos('jmp_pip_float_pos');
         const W  = saved ? saved.w : 320;
-        const H  = saved ? saved.h : 260;
+        const H  = saved ? saved.h : TITLE_H + Math.round(W / aspect) + CTRL_H;
         const px = saved ? saved.x : window.innerWidth  - W - 16;
         const py = saved ? saved.y : window.innerHeight - H - 16;
 
@@ -956,8 +976,9 @@
 
     // ── Minimal overlay mode ──────────────────────────────────────────────────
     function _enterMinimalMode() {
-        // Fixed 16:9 video hole; 36px controls strip below (outside ClearView zone).
-        const CTRL_H = 36, VID_W = 320, VID_H = 180;
+        // Use the video's actual aspect ratio so the hole matches exactly — no black bars.
+        const aspect = _pipGetVideoAspect();
+        const CTRL_H = 36, VID_W = 320, VID_H = Math.round(VID_W / aspect);
         const PANEL_H = VID_H + CTRL_H;
         const saved = _pipLoadPos('jmp_pip_minimal_pos');
         const px = saved ? saved.x : window.innerWidth  - VID_W - 16;
