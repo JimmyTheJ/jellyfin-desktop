@@ -371,8 +371,21 @@
                 for (const src of item.MediaSources) {
                     if (!src.MediaStreams) continue;
                     for (const s of src.MediaStreams) {
-                        if (s.Type === 'Video' && s.Width > 0 && s.Height > 0)
-                            return s.Width / s.Height;
+                        if (s.Type !== 'Video') continue;
+                        // Prefer AspectRatio string (display AR) over pixel dimensions.
+                        // Non-square-pixel sources (e.g. 720×480 NTSC DVD = 4:3 display) have
+                        // Width/Height = 1.5:1 but AspectRatio = "4:3" — using pixels alone
+                        // would size the video hole wrong and cause mpv to pillarbox the content.
+                        if (s.AspectRatio) {
+                            const parts = String(s.AspectRatio).split(':');
+                            if (parts.length === 2) {
+                                const num = parseFloat(parts[0]), den = parseFloat(parts[1]);
+                                if (num > 0 && den > 0) return num / den;
+                            }
+                            const direct = parseFloat(s.AspectRatio);
+                            if (direct > 0) return direct;
+                        }
+                        if (s.Width > 0 && s.Height > 0) return s.Width / s.Height;
                     }
                 }
             }
