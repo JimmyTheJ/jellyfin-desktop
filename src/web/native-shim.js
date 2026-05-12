@@ -859,6 +859,15 @@
         window.addEventListener('resize', updateRect);
         panel._onResize = updateRect;
 
+        // Called by _nativeUpdateVideoAspect when mpv reports the authoritative display AR.
+        // Resizes the video hole so mpv fills it exactly — no pillarbox/letterbox bars.
+        panel._refreshAspect = (ratio) => {
+            const newHoleW = Math.round(VID_HOLE_H * ratio);
+            videoArea.style.width = newHoleW + 'px';
+            videoWrapper.style.width = (newHoleW + VID_PAD_X * 2) + 'px';
+            _pipUpdateVideoRect(videoArea);
+        };
+
         // Inject body padding so page content isn't hidden behind the bar.
         if (!document.getElementById('jmp-pip-style')) {
             const st = document.createElement('style');
@@ -871,6 +880,7 @@
         document.body.appendChild(panel);
         window._mpvMiniPlayerActive = true;
         updateRect();
+        if (window._pipVideoAspect > 0) panel._refreshAspect(window._pipVideoAspect);
     }
 
     // ── Floating panel mode ───────────────────────────────────────────────────
@@ -1088,6 +1098,7 @@
         document.body.appendChild(panel);
         window._mpvMiniPlayerActive = true;
         _pipUpdateVideoRect(videoArea);
+        if (window._pipVideoAspect > 0) panel._refreshAspect(window._pipVideoAspect);
     }
 
     // ── Minimal overlay mode ──────────────────────────────────────────────────
@@ -1240,6 +1251,7 @@
         document.body.appendChild(panel);
         window._mpvMiniPlayerActive = true;
         _pipUpdateVideoRect(videoArea);
+        if (window._pipVideoAspect > 0) panel._refreshAspect(window._pipVideoAspect);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
