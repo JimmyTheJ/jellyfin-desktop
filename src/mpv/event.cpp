@@ -63,7 +63,7 @@ void observe_properties(MpvHandle& mpv) {
     mpv.ObservePropertyDouble(MPV_OBSERVE_DISPLAY_FPS, "display-fps");
     mpv.ObservePropertyNode(MPV_OBSERVE_CACHE_STATE, "demuxer-cache-state");
     mpv.ObservePropertyFlag(MPV_OBSERVE_WINDOW_MAX, "window-maximized");
-    mpv.ObservePropertyDouble(MPV_OBSERVE_VIDEO_ASPECT, "video-params/aspect");
+    mpv.ObservePropertyNode(MPV_OBSERVE_VIDEO_ASPECT, "video-params");
 }
 
 MpvEvent digest_property(uint64_t id, mpv_event_property* p) {
@@ -140,11 +140,27 @@ MpvEvent digest_property(uint64_t id, mpv_event_property* p) {
         s_display_scale.store(*static_cast<double*>(p->data),
                               std::memory_order_relaxed);
         break;
-    case MPV_OBSERVE_VIDEO_ASPECT:
-        if (p->format != MPV_FORMAT_DOUBLE) break;
-        ev.type = MpvEventType::VIDEO_ASPECT;
-        ev.dbl = *static_cast<double*>(p->data);
+    case MPV_OBSERVE_VIDEO_ASPECT: {
+        // Observe video-params as NODE (same pattern as osd-dimensions) and
+        // compute aspect from dw/dh — the display dimensions after SAR correction.
+        if (p->format != MPV_FORMAT_NODE || !p->data) break;
+        auto* n = static_cast<mpv_node*>(p->data);
+        if (n->format != MPV_FORMAT_NODE_MAP || !n->u.list) break;
+        int64_t dw = 0, dh = 0;
+        for (int i = 0; i < n->u.list->num; i++) {
+            const mpv_node& v = n->u.list->values[i];
+            const char* k = n->u.list->keys[i];
+            if (v.format == MPV_FORMAT_INT64) {
+                if (!strcmp(k, "dw")) dw = v.u.int64;
+                else if (!strcmp(k, "dh")) dh = v.u.int64;
+            }
+        }
+        if (dw > 0 && dh > 0) {
+            ev.type = MpvEventType::VIDEO_ASPECT;
+            ev.dbl = static_cast<double>(dw) / static_cast<double>(dh);
+        }
         break;
+    }
     case MPV_OBSERVE_DISPLAY_FPS: {
         if (p->format != MPV_FORMAT_DOUBLE) break;
         double fps = *static_cast<double*>(p->data);

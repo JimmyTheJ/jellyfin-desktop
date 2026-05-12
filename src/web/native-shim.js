@@ -1039,6 +1039,7 @@
             }
         );
         panel._stopResize = stopResize;
+        videoArea.addEventListener('mousedown', (e) => { e.stopPropagation(); });
 
         // Called by _nativeUpdateVideoAspect when mpv reports a new display AR.
         // Resizes the panel height to match the new ratio while keeping width constant.
