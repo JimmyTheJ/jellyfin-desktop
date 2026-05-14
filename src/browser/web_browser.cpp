@@ -284,7 +284,7 @@ bool WebBrowser::handleMessage(const std::string& name,
             double dpr    = mpv::display_scale() > 0.0 ? mpv::display_scale() : 1.0;
             double win_lw = mpv::window_pw() / dpr;
             double win_lh = mpv::window_ph() / dpr;
-            double scale  = std::min(
+            double scale  = std::max(
                 win_lw > 0 ? w / win_lw : 0.25,
                 win_lh > 0 ? h / win_lh : 0.25
             );
