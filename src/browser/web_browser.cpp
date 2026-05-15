@@ -279,6 +279,8 @@ bool WebBrowser::handleMessage(const std::string& name,
             g_mpv.SetVideoAlignY(0.0);
             if (g_platform.set_mini_player_hole)
                 g_platform.set_mini_player_hole(0, 0, 0, 0);
+            if (g_platform.store_pip_params)
+                g_platform.store_pip_params(0, 0, 0, 0, 0);
         } else {
             // Shrink and pin video to the requested rect (mini player)
             double dpr    = mpv::display_scale() > 0.0 ? mpv::display_scale() : 1.0;
@@ -336,6 +338,8 @@ bool WebBrowser::handleMessage(const std::string& name,
                     static_cast<int>(std::round(h * dpr))
                 );
             }
+            if (g_platform.store_pip_params)
+                g_platform.store_pip_params(x, y, w, h, video_ar);
         }
     } else {
         return false;

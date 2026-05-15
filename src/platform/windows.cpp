@@ -23,6 +23,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <thread>
 #include <atomic>
@@ -50,6 +51,14 @@ struct WinState {
 
     // Mini-player hole rect in physical pixels (w=0 means inactive)
     struct { int x = 0, y = 0, w = 0, h = 0; } mini_hole;
+
+    // Last PiP rect in CSS logical pixels + video AR; enables immediate
+    // reapply of mpv zoom/align on window resize without a JS round-trip.
+    struct PipParams {
+        bool   active = false;
+        double x = 0, y = 0, w = 0, h = 0;  // CSS logical pixels
+        double ar = 0;                         // video display AR (dw/dh)
+    } pip_params;
 
     // DirectComposition
     IDCompositionDevice* dcomp_device = nullptr;
@@ -287,6 +296,44 @@ static void win_present(const CefAcceleratedPaintInfo& info) {
 static void win_set_mini_player_hole(int x, int y, int w, int h) {
     std::lock_guard<std::mutex> lock(g_win.surface_mtx);
     g_win.mini_hole = {x, y, w, h};
+}
+
+static void win_store_pip_params(double x, double y, double w, double h, double ar) {
+    std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+    if (w > 0 && h > 0)
+        g_win.pip_params = {true, x, y, w, h, ar};
+    else
+        g_win.pip_params.active = false;
+}
+
+// Recompute and reapply mpv video-zoom / align for the given logical window
+// size. Called outside surface_mtx (mpv setters are async and thread-safe).
+static void win_reapply_pip_video_pos(const WinState::PipParams& pip,
+                                       double win_lw, double win_lh) {
+    double video_ar = pip.ar > 0 ? pip.ar
+                    : (pip.h > 1e-6 ? pip.w / pip.h : win_lw / win_lh);
+    double win_ar   = win_lh > 1e-6 ? win_lw / win_lh : 1.0;
+
+    double natural_lw, natural_lh;
+    if (video_ar <= win_ar) { natural_lw = win_lh * video_ar; natural_lh = win_lh; }
+    else                    { natural_lw = win_lw; natural_lh = win_lw / video_ar; }
+
+    double scale = std::min(
+        natural_lw > 1e-6 ? pip.w / natural_lw : 0.25,
+        natural_lh > 1e-6 ? pip.h / natural_lh : 0.25
+    );
+    g_mpv.SetVideoZoom(std::log2(scale));
+
+    double cx      = pip.x + pip.w / 2.0;
+    double cy      = pip.y + pip.h / 2.0;
+    double video_lw = natural_lw * scale;
+    double video_lh = natural_lh * scale;
+    double denom_x  = win_lw - video_lw;
+    double denom_y  = win_lh - video_lh;
+    double ax = denom_x > 1e-6 ? 2.0 * (cx - win_lw / 2.0) / denom_x : 0.0;
+    double ay = denom_y > 1e-6 ? 2.0 * (cy - win_lh / 2.0) / denom_y : 0.0;
+    g_mpv.SetVideoAlignX(std::max(-1.0, std::min(1.0, ax)));
+    g_mpv.SetVideoAlignY(std::max(-1.0, std::min(1.0, ay)));
 }
 
 static void win_present_software(const CefRenderHandler::RectList&, const void*, int, int) {
@@ -643,17 +690,39 @@ static LRESULT CALLBACK mpv_wndproc_hook(int nCode, WPARAM wp, LPARAM lp) {
                     LONG_PTR style = GetWindowLongPtr(g_win.mpv_hwnd, GWL_STYLE);
                     bool fs = !(style & WS_OVERLAPPEDWINDOW);
 
-                    std::lock_guard<std::mutex> lock(g_win.surface_mtx);
-                    if (fs != g_win.was_fullscreen) {
-                        if (!g_win.transitioning)
-                            win_begin_transition_locked();
-                        else
+                    bool transitioning;
+                    WinState::PipParams pip;
+                    {
+                        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+                        if (fs != g_win.was_fullscreen) {
+                            if (!g_win.transitioning)
+                                win_begin_transition_locked();
+                            else
+                                win_end_transition_locked();
+                            g_win.was_fullscreen = fs;
+                        } else if (g_win.transitioning) {
                             win_end_transition_locked();
-                        g_win.was_fullscreen = fs;
-                    } else if (g_win.transitioning) {
-                        win_end_transition_locked();
+                        }
+                        update_surface_size_locked(lw, lh, pw, ph);
+
+                        transitioning = g_win.transitioning;
+                        pip = g_win.pip_params;
+                        // Keep hole in sync with new physical pixel scale
+                        if (pip.active) {
+                            g_win.mini_hole = {
+                                static_cast<int>(std::round(pip.x * scale)),
+                                static_cast<int>(std::round(pip.y * scale)),
+                                static_cast<int>(std::round(pip.w * scale)),
+                                static_cast<int>(std::round(pip.h * scale))
+                            };
+                        }
                     }
-                    update_surface_size_locked(lw, lh, pw, ph);
+
+                    // Immediately reapply video positioning for the new window
+                    // size so there is no glitch while waiting for JS to call
+                    // setVideoRectangle with updated coordinates.
+                    if (pip.active && !transitioning)
+                        win_reapply_pip_video_pos(pip, lw, lh);
                 }
             } else if (msg->message == WM_CLOSE) {
                 initiate_shutdown();
@@ -878,6 +947,7 @@ Platform make_windows_platform() {
         .set_idle_inhibit = win_set_idle_inhibit,
         .set_titlebar_color = win_set_titlebar_color,
         .set_mini_player_hole = win_set_mini_player_hole,
+        .store_pip_params = win_store_pip_params,
         .clipboard_read_text_async = win_clipboard_read_text_async,
         .open_external_url = win_open_external_url,
     };

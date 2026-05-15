@@ -119,6 +119,13 @@ struct Platform {
     // Windows-only (D3D11 ClearView); null on other platforms.
     void (*set_mini_player_hole)(int x, int y, int w, int h) = nullptr;
 
+    // Store the PiP rect in CSS logical pixels and the video display AR so
+    // that the platform can immediately reapply mpv video-zoom/align on
+    // window resize without waiting for a JS round-trip. w=0 clears.
+    // Windows-only; null on other platforms.
+    void (*store_pip_params)(double x, double y, double w, double h,
+                             double ar) = nullptr;
+
     // Whether the GPU can produce shared textures (dmabufs). Set during init.
     // When false, CEF should use software rendering (OnPaint) instead of
     // OnAcceleratedPaint, and present_software / overlay_present_software
