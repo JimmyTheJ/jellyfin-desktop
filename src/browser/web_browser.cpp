@@ -293,10 +293,25 @@ bool WebBrowser::handleMessage(const std::string& name,
             // Compute alignment from the target rect center relative to the window.
             // video-align-x/y: -1 = left/top, 0 = center, 1 = right/bottom.
             // Formula: align = 2*(center - win/2) / (win - video_size)
+            //
+            // At zoom=0 with keepaspect=yes, mpv fits the video into the window
+            // along one axis.  We must use the actual rendered video dimensions
+            // (accounting for the video's aspect ratio) as the denominator,
+            // not win * scale which only holds when video AR == window AR.
             double cx = x + w / 2.0;
             double cy = y + h / 2.0;
-            double video_lw = win_lw * scale;
-            double video_lh = win_lh * scale;
+            double video_ar = (h > 1e-6) ? (w / h) : (win_lw / win_lh);
+            double win_ar   = (win_lh > 1e-6) ? (win_lw / win_lh) : 1.0;
+            double video_lw, video_lh;
+            if (video_ar <= win_ar) {
+                // Video fills window height at zoom=0 (pillarboxed)
+                video_lw = win_lh * video_ar * scale;
+                video_lh = win_lh * scale;
+            } else {
+                // Video fills window width at zoom=0 (letterboxed)
+                video_lw = win_lw * scale;
+                video_lh = win_lw / video_ar * scale;
+            }
             double denom_x  = win_lw - video_lw;
             double denom_y  = win_lh - video_lh;
             double ax = denom_x > 1e-6 ? 2.0 * (cx - win_lw / 2.0) / denom_x : 0.0;
