@@ -255,8 +255,8 @@
                 console.log('[Media] player.setAspectMode:', mode);
                 if (window.jmpNative) window.jmpNative.playerSetAspectMode(mode);
             },
-            setVideoRectangle(x, y, w, h) {
-                if (window.jmpNative) window.jmpNative.setVideoRect(x, y, w, h);
+            setVideoRectangle(x, y, w, h, ar) {
+                if (window.jmpNative) window.jmpNative.setVideoRect(x, y, w, h, ar !== undefined ? ar : 0);
             },
             getPosition(callback) {
                 if (callback) callback(playerState.position);
@@ -407,7 +407,7 @@
 
     function _pipUpdateVideoRect(videoArea) {
         const r = videoArea.getBoundingClientRect();
-        window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height);
+        window.api.player.setVideoRectangle(r.left, r.top, r.width, r.height, _pipGetVideoAspect());
     }
 
     const _PIP_BTN_CSS = 'background:none;border:none;color:#fff;font-size:18px;cursor:pointer;' +
