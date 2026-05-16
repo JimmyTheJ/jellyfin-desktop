@@ -93,6 +93,7 @@ struct WinState {
     int pending_lw = 0, pending_lh = 0;
     bool transitioning = false;
     bool was_fullscreen = false;
+    bool was_maximized = false;   // for skipping stale reapply on restore-from-maximize
 
     // Input thread (body lives in input::windows::run_input_thread)
     std::thread input_thread;
@@ -691,6 +692,7 @@ static LRESULT CALLBACK mpv_wndproc_hook(int nCode, WPARAM wp, LPARAM lp) {
                     bool fs = !(style & WS_OVERLAPPEDWINDOW);
 
                     bool transitioning;
+                    bool prev_maximized;
                     WinState::PipParams pip;
                     {
                         std::lock_guard<std::mutex> lock(g_win.surface_mtx);
@@ -706,9 +708,13 @@ static LRESULT CALLBACK mpv_wndproc_hook(int nCode, WPARAM wp, LPARAM lp) {
                         update_surface_size_locked(lw, lh, pw, ph);
 
                         transitioning = g_win.transitioning;
+                        prev_maximized = g_win.was_maximized;
+                        g_win.was_maximized = (msg->wParam == SIZE_MAXIMIZED);
                         pip = g_win.pip_params;
-                        // Keep hole in sync with new physical pixel scale
-                        if (pip.active) {
+
+                        // Don't update hole/zoom with stale maximized-window coords
+                        // when restoring from maximized. JS will send fresh coords.
+                        if (pip.active && !prev_maximized) {
                             g_win.mini_hole = {
                                 static_cast<int>(std::round(pip.x * scale)),
                                 static_cast<int>(std::round(pip.y * scale)),
@@ -721,7 +727,10 @@ static LRESULT CALLBACK mpv_wndproc_hook(int nCode, WPARAM wp, LPARAM lp) {
                     // Immediately reapply video positioning for the new window
                     // size so there is no glitch while waiting for JS to call
                     // setVideoRectangle with updated coordinates.
-                    if (pip.active && !transitioning)
+                    // Skip when restoring from maximize: pip_params still holds
+                    // the old maximized-window coords which would produce an
+                    // oversized, misaligned video until JS sends new coords.
+                    if (pip.active && !transitioning && !prev_maximized)
                         win_reapply_pip_video_pos(pip, lw, lh);
                 }
             } else if (msg->message == WM_CLOSE) {
@@ -759,11 +768,16 @@ static bool win_init(mpv_handle* mpv) {
     if (!init_d3d()) return false;
     if (!init_dcomp()) return false;
 
-    // Seed was_fullscreen before installing the hook so the first WM_SIZE
-    // doesn't start a spurious transition if already fullscreen.
+    // Seed was_fullscreen / was_maximized before installing the hook so the
+    // first WM_SIZE doesn't start a spurious transition if already fullscreen,
+    // or incorrectly skip a reapply if already maximized.
     {
         LONG_PTR style = GetWindowLongPtr(g_win.mpv_hwnd, GWL_STYLE);
         g_win.was_fullscreen = !(style & WS_OVERLAPPEDWINDOW);
+        WINDOWPLACEMENT wp{};
+        wp.length = sizeof(wp);
+        if (GetWindowPlacement(g_win.mpv_hwnd, &wp))
+            g_win.was_maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
     }
 
     // Install hook to monitor mpv's HWND for size/fullscreen/close
