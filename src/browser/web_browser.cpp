@@ -279,18 +279,57 @@ bool WebBrowser::handleMessage(const std::string& name,
             g_mpv.SetVideoAlignY(0.0);
             if (g_platform.set_mini_player_hole)
                 g_platform.set_mini_player_hole(0, 0, 0, 0);
+            if (g_platform.store_pip_params)
+                g_platform.store_pip_params(0, 0, 0, 0, 0);
         } else {
-            // Shrink and pin video to the bottom-right corner (mini player)
+            // Shrink and pin video to the requested rect (mini player)
             double dpr    = mpv::display_scale() > 0.0 ? mpv::display_scale() : 1.0;
             double win_lw = mpv::window_pw() / dpr;
             double win_lh = mpv::window_ph() / dpr;
-            double scale  = std::min(
-                win_lw > 0 ? w / win_lw : 0.25,
-                win_lh > 0 ? h / win_lh : 0.25
+
+            // 5th arg: actual video display AR (dw/dh from video-params).
+            // Falls back to panel AR when not provided or not yet known.
+            double video_ar_hint = (args->GetSize() >= 5) ? args->GetDouble(4) : 0.0;
+            double video_ar = (video_ar_hint > 0.0) ? video_ar_hint
+                            : (h > 0) ? (static_cast<double>(w) / h) : (win_lw / win_lh);
+            double win_ar   = (win_lh > 1e-6) ? (win_lw / win_lh) : 1.0;
+
+            // Natural video size at zoom=0 with keepaspect=yes:
+            //   pillarboxed (va ≤ win_ar): fills window height
+            //   letterboxed (va > win_ar): fills window width
+            double natural_lw, natural_lh;
+            if (video_ar <= win_ar) {
+                natural_lw = win_lh * video_ar;
+                natural_lh = win_lh;
+            } else {
+                natural_lw = win_lw;
+                natural_lh = win_lw / video_ar;
+            }
+
+            // "Contain" scale: fit video within the hole without overflowing.
+            // std::min picks the axis that is the binding constraint, ensuring
+            // the video never bleeds outside the ClearView hole.
+            double scale = std::min(
+                natural_lw > 1e-6 ? w / natural_lw : 0.25,
+                natural_lh > 1e-6 ? h / natural_lh : 0.25
             );
             g_mpv.SetVideoZoom(std::log2(scale));
-            g_mpv.SetVideoAlignX(1.0);
-            g_mpv.SetVideoAlignY(1.0);
+
+            // Align the video center to the hole center.
+            // video-align-x/y: -1 = left/top, 0 = center, 1 = right/bottom.
+            // Derivation from mpv's src_dst_split_scaling:
+            //   dst_start = (win - video) * (ax+1)/2  →  ax = 2*(cx - win/2)/(win - video)
+            double cx      = x + w / 2.0;
+            double cy      = y + h / 2.0;
+            double video_lw = natural_lw * scale;
+            double video_lh = natural_lh * scale;
+            double denom_x  = win_lw - video_lw;
+            double denom_y  = win_lh - video_lh;
+            double ax = denom_x > 1e-6 ? 2.0 * (cx - win_lw / 2.0) / denom_x : 0.0;
+            double ay = denom_y > 1e-6 ? 2.0 * (cy - win_lh / 2.0) / denom_y : 0.0;
+            g_mpv.SetVideoAlignX(std::max(-1.0, std::min(1.0, ax)));
+            g_mpv.SetVideoAlignY(std::max(-1.0, std::min(1.0, ay)));
+
             if (g_platform.set_mini_player_hole) {
                 g_platform.set_mini_player_hole(
                     static_cast<int>(std::round(x * dpr)),
@@ -299,6 +338,8 @@ bool WebBrowser::handleMessage(const std::string& name,
                     static_cast<int>(std::round(h * dpr))
                 );
             }
+            if (g_platform.store_pip_params)
+                g_platform.store_pip_params(x, y, w, h, video_ar);
         }
     } else {
         return false;

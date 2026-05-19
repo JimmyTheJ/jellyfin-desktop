@@ -248,6 +248,10 @@ static void cef_consumer_thread() {
                 // Duration is set via metadata, not a separate call
                 break;
             }
+            case MpvEventType::VIDEO_ASPECT:
+                if (ev.dbl > 0)
+                    g_web_browser->execJs("window._nativeUpdateVideoAspect(" + std::to_string(ev.dbl) + ")");
+                break;
             case MpvEventType::FULLSCREEN:
                 if (ev.flag) {
                     g_was_maximized_before_fullscreen = mpv::window_maximized();
