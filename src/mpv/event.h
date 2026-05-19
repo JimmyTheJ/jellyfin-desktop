@@ -75,6 +75,7 @@ namespace mpv {
     int  window_pw();
     int  window_ph();
     void set_window_pixels(int pw, int ph);
+    void set_window_maximized(bool maximized);
     // Cached value of mpv's display-hidpi-scale, updated from property
     // observation. Returns 0 before the first event arrives; callers
     // should treat 0 as "not yet known" and fall back to 1.0.

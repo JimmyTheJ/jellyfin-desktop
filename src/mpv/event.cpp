@@ -29,6 +29,10 @@ namespace mpv {
         s_window_ph.store(ph, std::memory_order_relaxed);
     }
 
+    void set_window_maximized(bool v) {
+        s_window_maximized.store(v, std::memory_order_relaxed);
+    }
+
     bool read_osd_dims_from_event(mpv_event_property* p, int64_t* w, int64_t* h) {
         if (!p || p->format != MPV_FORMAT_NODE || !p->data) return false;
         auto* n = static_cast<mpv_node*>(p->data);

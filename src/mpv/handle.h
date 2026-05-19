@@ -217,16 +217,17 @@ private:
         SetOptionString("title", "Jellyfin Desktop");
         SetOptionString("wayland-app-id", "org.jellyfin.JellyfinDesktop");
 #ifdef _WIN32
-        // Tell mpv to load window icon from our exe resources
-        _putenv_s("MPV_WINDOW_ICON", "IDI_ICON1");
-#endif
-
+        // Use libmpv render API — we own the window; mpv must not create one.
+        SetOptionString("vo", "libmpv");
+        SetOptionString("idle", "yes");
+#else
         // Keep window open when idle (no media loaded).
         // force-window=yes (not "immediate") avoids a macOS deadlock:
         // "immediate" calls handle_force_window during mpv_initialize, which
         // triggers DispatchQueue.main.sync while main is blocked in init.
         SetOptionString("force-window", "yes");
         SetOptionString("idle", "yes");
+#endif
     }
 
     // =====================================================================

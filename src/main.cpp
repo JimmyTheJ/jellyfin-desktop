@@ -649,13 +649,17 @@ int main(int argc, char* argv[]) {
     }
 
     // --- Wait for VO (mpv needs a window before we can get platform handles) ---
-    // Both loops wait for an osd-dimensions property-change event carrying
-    // positive w/h, captured into mw/mh via mpv::read_osd_dims_from_event.
+    // On Windows, --vo=libmpv is used: mpv never creates its own OS window, so
+    // osd-dimensions never fires before the render context is created. Platform
+    // init creates the HWND and render thread; mw/mh come from there.
+    // On other platforms, both loops wait for an osd-dimensions property-change
+    // event carrying positive w/h, captured via mpv::read_osd_dims_from_event.
     // That's a struct read of the event payload — no mpv_get_property call —
     // so it's safe on macOS's main thread during VO init, where a synchronous
     // property read can deadlock against core_thread's DispatchQueue.main.sync.
-    LOG_INFO(LOG_MAIN, "Waiting for mpv window...");
     int64_t mw = 0, mh = 0;
+#ifndef _WIN32
+    LOG_INFO(LOG_MAIN, "Waiting for mpv window...");
     // Route every PROPERTY_CHANGE through digest_property, not just osd-dims.
     // Side effect: seeds the atomics (s_osd_pw/ph, s_fullscreen,
     // s_display_scale, ...) as mpv fires initial-value events, so platform
@@ -698,6 +702,7 @@ int main(int argc, char* argv[]) {
         if (try_consume_osd_dims(ev)) break;
     }
 #endif
+#endif // !_WIN32
 
     // --- Platform init ---
     // Resolve effective ozone platform so CEF clients can check it.
@@ -734,6 +739,15 @@ int main(int argc, char* argv[]) {
     LOG_INFO(LOG_MAIN, "[FLOW] CefInitialize returned ok");
 
     double display_hidpi_scale = 0.0;
+#ifdef _WIN32
+    // With --vo=libmpv, mpv has no window; mw/mh were set during platform init
+    // via mpv::set_window_pixels(). Read them back here.
+    mw = mpv::window_pw();
+    mh = mpv::window_ph();
+    display_hidpi_scale = static_cast<double>(g_platform.get_scale());
+    LOG_INFO(LOG_MAIN, "[FLOW] Windows RTT: window={}x{} scale={:.3f}", mw, mh,
+             display_hidpi_scale);
+#else
     mpv_get_property(g_mpv.Get(), "display-hidpi-scale",
                      MPV_FORMAT_DOUBLE, &display_hidpi_scale);
     int fs_flag = 0;
@@ -776,6 +790,7 @@ int main(int argc, char* argv[]) {
         }
         mpv::set_window_pixels(static_cast<int>(mw), static_cast<int>(mh));
     }
+#endif // _WIN32
 
     // --- Create browsers ---
     float scale = display_hidpi_scale > 0.0
