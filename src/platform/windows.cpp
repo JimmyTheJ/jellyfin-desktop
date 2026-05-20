@@ -1528,6 +1528,15 @@ static void win_close_detached_pip() {
     g_win.render_wake.signal();
     ack_future.wait();
 
+    // Restore the main DComp video visual now that pip is done.
+    {
+        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+        if (g_win.dcomp_video_visual && g_win.dcomp_device && g_win.video_swap_chain) {
+            g_win.dcomp_video_visual->SetContent(g_win.video_swap_chain);
+            g_win.dcomp_device->Commit();
+        }
+    }
+
     // pip_phase is now 0; save pip_hwnd then tell the pip thread to exit
     HWND pip_hwnd = g_win.pip_hwnd;
     g_win.pip_hwnd = nullptr;
@@ -1558,6 +1567,16 @@ static void win_open_detached_pip() {
         LOG_ERROR(LOG_PLATFORM, "Pip window failed to create");
         if (g_win.pip_window_thread.joinable()) g_win.pip_window_thread.join();
         return;
+    }
+
+    // Hide the main DComp video visual so the stale frame doesn't show through
+    // the CEF overlay while pip is active.
+    {
+        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+        if (g_win.dcomp_video_visual && g_win.dcomp_device) {
+            g_win.dcomp_video_visual->SetContent(nullptr);
+            g_win.dcomp_device->Commit();
+        }
     }
 
     // Seed initial dimensions before making phase=1 visible to render thread,
