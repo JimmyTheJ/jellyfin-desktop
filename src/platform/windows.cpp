@@ -1040,6 +1040,21 @@ static void render_thread_func(std::promise<bool> init_promise) {
             glReadPixels(0, 0, fw, fh, GL_BGRA, GL_UNSIGNED_BYTE, g_win.pip_pixel_buf.data());
             gl_BindFramebuffer_(GL_FRAMEBUFFER, 0);
 
+            // HWND swap chains use Y-down (screen) coordinates, so row 0 maps
+            // to the top of the window. CreateSwapChainForComposition (DComp)
+            // uses Y-up internally, so the flip_y=1 pre-flip that mpv applies
+            // corrects for that. For a plain HWND swap chain we need to reverse
+            // row order after readback to undo the unwanted pre-flip.
+            {
+                const size_t stride = static_cast<size_t>(fw) * 4;
+                uint8_t* buf = g_win.pip_pixel_buf.data();
+                for (int row = 0; row < fh / 2; ++row) {
+                    std::swap_ranges(buf + row * stride,
+                                     buf + row * stride + stride,
+                                     buf + (fh - 1 - row) * stride);
+                }
+            }
+
             g_win.renderer.report_swap();
 
             {
