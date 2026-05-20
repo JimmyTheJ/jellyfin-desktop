@@ -141,9 +141,42 @@ struct WinState {
 
     // Input thread (body lives in input::windows::run_input_thread)
     std::thread input_thread;
+
+    // ── Detached PiP window ──────────────────────────────────────────────────
+    // pip_phase: 0=Main (render to main swap chain),
+    //            1=Active (render to pip swap chain),
+    //            2=Closing (render thread tears down pip resources)
+    std::atomic<int> pip_phase{0};
+    std::mutex       pip_op_mtx;  // serializes open/close; held for entire close sequence
+
+    HWND             pip_hwnd        = nullptr;
+    std::thread      pip_window_thread;
+    DWORD            pip_window_tid  = 0;
+
+    // pip swap chain (created/destroyed by render thread under surface_mtx)
+    IDXGISwapChain1* pip_swap_chain = nullptr;
+    int              pip_sw = 0, pip_sh = 0;
+
+    // Pending pip window client size (written by pip_wndproc, read by render thread)
+    std::atomic<int> pending_pip_w{0};
+    std::atomic<int> pending_pip_h{0};
+
+    // Close acknowledgement (a promise on the stack of win_close_detached_pip,
+    // protected by surface_mtx; render thread fulfills it after pip teardown)
+    std::promise<void>* pip_close_ack = nullptr;
+
+    // Pip GL FBO (render thread only — no lock needed)
+    GLuint pip_gl_fbo       = 0;
+    GLuint pip_gl_color_tex = 0;
+    int    pip_fbo_w = 0, pip_fbo_h = 0;
+    std::vector<uint8_t> pip_pixel_buf;
 };
 
 static WinState g_win;
+
+// Custom WM_APP messages
+static const UINT WM_APP_PIP_CLOSED  = WM_APP + 1; // pip_wndproc → mpv_hwnd: user closed pip
+static const UINT WM_APP_PIP_DESTROY = WM_APP + 2; // win_close_detached_pip → pip_hwnd: C++ close
 
 // =====================================================================
 // GL extension constants (not in Windows SDK <GL/gl.h>)
@@ -330,9 +363,41 @@ static void ensure_video_swap_chain(int w, int h) {
     sw = w; sh = h;
 }
 
-// =====================================================================
-// Present CEF shared texture -- main browser
-// =====================================================================
+// Create or resize the pip window's swap chain (HWND-bound, no DComp).
+// Must be called under surface_mtx from the render thread.
+static void ensure_pip_swap_chain(int w, int h) {
+    if (w <= 0 || h <= 0 || !g_win.pip_hwnd) return;
+    auto& sc = g_win.pip_swap_chain;
+    auto& sw = g_win.pip_sw;
+    auto& sh = g_win.pip_sh;
+    if (sc && sw == w && sh == h) return;
+
+    if (sc) {
+        HRESULT hr = sc->ResizeBuffers(2, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+        if (SUCCEEDED(hr)) { sw = w; sh = h; return; }
+        sc->Release(); sc = nullptr;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width            = static_cast<UINT>(w);
+    desc.Height           = static_cast<UINT>(h);
+    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage      = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount      = 2;
+    desc.SwapEffect       = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode        = DXGI_ALPHA_MODE_IGNORE;
+    desc.Scaling          = DXGI_SCALING_NONE;  // 1:1 pixel mapping, no stretching
+    HRESULT hr = g_win.dxgi_factory->CreateSwapChainForHwnd(
+        g_win.d3d_device, g_win.pip_hwnd, &desc, nullptr, nullptr, &sc);
+    if (FAILED(hr)) {
+        LOG_ERROR(LOG_PLATFORM, "CreateSwapChainForHwnd (pip) failed: 0x{:08x}", hr);
+        return;
+    }
+    // Prevent DXGI from intercepting Alt+Enter on the pip window
+    g_win.dxgi_factory->MakeWindowAssociation(g_win.pip_hwnd, DXGI_MWA_NO_ALT_ENTER);
+    sw = w; sh = h;
+}
 
 static void win_present(const CefAcceleratedPaintInfo& info) {
     HANDLE handle = info.shared_texture_handle;
@@ -864,9 +929,42 @@ static void recreate_fbo(int w, int h) {
     g_win.pixel_buf.resize(static_cast<size_t>(w) * h * 4);
 }
 
-// =====================================================================
-// Render thread: mpv → FBO → CPU readback → D3D11 video swap chain
-// =====================================================================
+// Same as recreate_fbo but for the pip GL FBO. Render-thread-only.
+static void recreate_pip_fbo(int w, int h) {
+    if (gl_BindFramebuffer_) gl_BindFramebuffer_(GL_FRAMEBUFFER, 0);
+    if (g_win.pip_gl_fbo) {
+        gl_DeleteFramebuffers_(1, &g_win.pip_gl_fbo);
+        g_win.pip_gl_fbo = 0;
+    }
+    if (g_win.pip_gl_color_tex) {
+        glDeleteTextures(1, &g_win.pip_gl_color_tex);
+        g_win.pip_gl_color_tex = 0;
+    }
+    g_win.pip_fbo_w = 0;
+    g_win.pip_fbo_h = 0;
+    if (w <= 0 || h <= 0) return;
+
+    glGenTextures(1, &g_win.pip_gl_color_tex);
+    glBindTexture(GL_TEXTURE_2D, g_win.pip_gl_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    gl_GenFramebuffers_(1, &g_win.pip_gl_fbo);
+    gl_BindFramebuffer_(GL_FRAMEBUFFER, g_win.pip_gl_fbo);
+    gl_FramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, g_win.pip_gl_color_tex, 0);
+    GLenum status = gl_CheckFramebufferStatus_(GL_FRAMEBUFFER);
+    gl_BindFramebuffer_(GL_FRAMEBUFFER, 0);
+
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_ERROR(LOG_PLATFORM, "Pip FBO incomplete (status=0x{:04x})", status);
+        recreate_pip_fbo(0, 0);
+        return;
+    }
+    g_win.pip_fbo_w = w;
+    g_win.pip_fbo_h = h;
+    g_win.pip_pixel_buf.resize(static_cast<size_t>(w) * h * 4);
+}
 
 static void render_thread_func(std::promise<bool> init_promise) {
     if (!wglMakeCurrent(g_win.gl_hdc, g_win.gl_hglrc)) {
@@ -907,6 +1005,63 @@ static void render_thread_func(std::promise<bool> init_promise) {
         // Check for stop signal
         if (WaitForSingleObject(static_cast<HANDLE>(g_win.render_stop.handle()), 0) == WAIT_OBJECT_0)
             break;
+
+        // ── Phase 2: Closing — tear down pip resources then ack ───────────────
+        if (g_win.pip_phase.load(std::memory_order_acquire) == 2) {
+            recreate_pip_fbo(0, 0);
+            std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+            if (g_win.pip_swap_chain) {
+                g_win.pip_swap_chain->Release();
+                g_win.pip_swap_chain = nullptr;
+            }
+            g_win.pip_sw = 0; g_win.pip_sh = 0;
+            g_win.pip_phase.store(0, std::memory_order_release);
+            if (g_win.pip_close_ack) {
+                g_win.pip_close_ack->set_value();
+                g_win.pip_close_ack = nullptr;
+            }
+            continue;
+        }
+
+        // ── Phase 1: Active — render to pip swap chain ───────────────────────
+        if (g_win.pip_phase.load(std::memory_order_acquire) == 1) {
+            int pw = g_win.pending_pip_w.load(std::memory_order_relaxed);
+            int ph = g_win.pending_pip_h.load(std::memory_order_relaxed);
+            if (pw > 0 && ph > 0 && (pw != g_win.pip_fbo_w || ph != g_win.pip_fbo_h))
+                recreate_pip_fbo(pw, ph);
+
+            if (g_win.pip_fbo_w <= 0 || g_win.pip_fbo_h <= 0) continue;
+
+            int fw = g_win.pip_fbo_w, fh = g_win.pip_fbo_h;
+            if (!g_win.renderer.render(static_cast<int>(g_win.pip_gl_fbo), fw, fh))
+                continue;
+
+            gl_BindFramebuffer_(GL_FRAMEBUFFER, g_win.pip_gl_fbo);
+            glReadPixels(0, 0, fw, fh, GL_BGRA, GL_UNSIGNED_BYTE, g_win.pip_pixel_buf.data());
+            gl_BindFramebuffer_(GL_FRAMEBUFFER, 0);
+
+            g_win.renderer.report_swap();
+
+            {
+                std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+                ensure_pip_swap_chain(fw, fh);
+                if (!g_win.pip_swap_chain) continue;
+
+                ID3D11Texture2D* bb = nullptr;
+                HRESULT hr = g_win.pip_swap_chain->GetBuffer(
+                    0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb));
+                if (SUCCEEDED(hr) && bb) {
+                    g_win.d3d_context->UpdateSubresource(
+                        bb, 0, nullptr,
+                        g_win.pip_pixel_buf.data(), static_cast<UINT>(fw * 4), 0);
+                    bb->Release();
+                }
+                g_win.pip_swap_chain->Present(0, 0);
+            }
+            continue;
+        }
+
+        // ── Phase 0: Main — render to main swap chain (DComp) ────────────────
 
         // Resize FBO if window changed size
         int fw = g_win.pending_fbo_w.load(std::memory_order_relaxed);
@@ -951,10 +1106,117 @@ static void render_thread_func(std::promise<bool> init_promise) {
         }
     }
 
+    // Defensive: if render_stop fires while close is still pending, fulfill the ack
+    // so win_close_detached_pip doesn't deadlock (shouldn't happen in normal shutdown
+    // since win_cleanup calls win_close_detached_pip first, but guard anyway).
+    {
+        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+        if (g_win.pip_close_ack) {
+            g_win.pip_close_ack->set_value();
+            g_win.pip_close_ack = nullptr;
+        }
+        if (g_win.pip_swap_chain) {
+            g_win.pip_swap_chain->Release();
+            g_win.pip_swap_chain = nullptr;
+        }
+    }
     // Cleanup (still owns the GL context)
+    recreate_pip_fbo(0, 0);
     recreate_fbo(0, 0);
     g_win.renderer.free();
     wglMakeCurrent(nullptr, nullptr);
+}
+
+// =====================================================================
+// Pip window WndProc and message-pump thread
+// =====================================================================
+
+static LRESULT CALLBACK pip_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_SIZE:
+        if (wParam != SIZE_MINIMIZED) {
+            int pw = LOWORD(lParam), ph = HIWORD(lParam);
+            if (pw > 0 && ph > 0) {
+                g_win.pending_pip_w.store(pw, std::memory_order_relaxed);
+                g_win.pending_pip_h.store(ph, std::memory_order_relaxed);
+                g_win.render_wake.signal();
+            }
+        }
+        return 0;
+
+    case WM_NCHITTEST: {
+        // Make the entire client area draggable; borders handled by DefWindowProc.
+        LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
+        if (hit == HTCLIENT) return HTCAPTION;
+        return hit;
+    }
+
+    case WM_NCLBUTTONDBLCLK:
+        // Double-click anywhere (inc. the drag caption area) → close pip.
+        PostMessageW(g_win.mpv_hwnd, WM_APP_PIP_CLOSED, 0, 0);
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_CLOSE:
+        // User clicked the (invisible) close affordance or pressed Alt+F4.
+        PostMessageW(g_win.mpv_hwnd, WM_APP_PIP_CLOSED, 0, 0);
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    // WM_APP_PIP_DESTROY: win_close_detached_pip triggers this to destroy us
+    if (msg == WM_APP_PIP_DESTROY) {
+        DestroyWindow(hwnd);
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void win_pip_thread_func(int initial_w, int initial_h) {
+    RECT wr{0, 0, initial_w, initial_h};
+    UINT dpi = GetDpiForSystem();
+    AdjustWindowRectExForDpi(&wr, WS_POPUP | WS_THICKFRAME, FALSE, WS_EX_TOPMOST | WS_EX_TOOLWINDOW, dpi);
+    int win_w = wr.right - wr.left;
+    int win_h = wr.bottom - wr.top;
+
+    // Position bottom-right of the main window's monitor
+    HMONITOR mon = MonitorFromWindow(g_win.mpv_hwnd, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi{}; mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(mon, &mi);
+    int pos_x = mi.rcWork.right  - win_w - 20;
+    int pos_y = mi.rcWork.bottom - win_h - 20;
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"JellyfinDesktopPip", L"Picture in Picture",
+        WS_POPUP | WS_THICKFRAME,
+        pos_x, pos_y, win_w, win_h,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+    if (!hwnd) {
+        LOG_ERROR(LOG_PLATFORM, "CreateWindowExW (pip) failed: 0x{:08x}", GetLastError());
+        return;
+    }
+
+    g_win.pip_hwnd       = hwnd;
+    g_win.pip_window_tid = GetCurrentThreadId();
+    g_win.pending_pip_w.store(initial_w, std::memory_order_relaxed);
+    g_win.pending_pip_h.store(initial_h, std::memory_order_relaxed);
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    g_win.render_wake.signal();
+
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
 }
 
 // =====================================================================
@@ -1046,6 +1308,14 @@ static LRESULT CALLBACK our_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         PostQuitMessage(0);
         return 0;
     }
+
+    // User closed pip window: notify JS and initiate C++ cleanup
+    if (msg == WM_APP_PIP_CLOSED) {
+        if (g_web_browser)
+            g_web_browser->execJs("if(window._nativeOnPipWindowClosed)window._nativeOnPipWindowClosed()");
+        return 0;
+    }
+
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -1101,6 +1371,16 @@ static void win_early_init() {
     wc_gl.hInstance     = GetModuleHandleW(nullptr);
     wc_gl.lpszClassName = L"JellyfinDesktopGL";
     RegisterClassExW(&wc_gl);
+
+    // Register JellyfinDesktopPip — detached always-on-top pip window.
+    WNDCLASSEXW wc_pip = {};
+    wc_pip.cbSize        = sizeof(wc_pip);
+    wc_pip.style         = CS_HREDRAW | CS_VREDRAW;
+    wc_pip.lpfnWndProc   = pip_wndproc;
+    wc_pip.hInstance     = GetModuleHandleW(nullptr);
+    wc_pip.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    wc_pip.lpszClassName = L"JellyfinDesktopPip";
+    RegisterClassExW(&wc_pip);
 }
 
 static bool win_init(mpv_handle* /*mpv*/) {
@@ -1233,7 +1513,61 @@ static bool win_init(mpv_handle* /*mpv*/) {
     return true;
 }
 
+static void win_close_detached_pip() {
+    std::lock_guard<std::mutex> op_lock(g_win.pip_op_mtx);
+    if (g_win.pip_phase.load(std::memory_order_acquire) != 1) return;
+
+    // Ask render thread to tear down pip resources and report back
+    std::promise<void> ack;
+    std::future<void>  ack_future = ack.get_future();
+    {
+        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+        g_win.pip_close_ack = &ack;
+        g_win.pip_phase.store(2, std::memory_order_release);
+    }
+    g_win.render_wake.signal();
+    ack_future.wait();
+
+    // pip_phase is now 0; save pip_hwnd then tell the pip thread to exit
+    HWND pip_hwnd = g_win.pip_hwnd;
+    g_win.pip_hwnd = nullptr;
+    g_win.pending_pip_w.store(0, std::memory_order_relaxed);
+    g_win.pending_pip_h.store(0, std::memory_order_relaxed);
+
+    if (pip_hwnd && g_win.pip_window_tid)
+        PostMessageW(pip_hwnd, WM_APP_PIP_DESTROY, 0, 0);
+
+    if (g_win.pip_window_thread.joinable())
+        g_win.pip_window_thread.join();
+
+    g_win.pip_window_tid = 0;
+}
+
+static void win_open_detached_pip() {
+    std::lock_guard<std::mutex> op_lock(g_win.pip_op_mtx);
+    if (g_win.pip_phase.load(std::memory_order_acquire) != 0) return;
+
+    constexpr int kInitW = 480, kInitH = 270;
+    g_win.pip_window_thread = std::thread(win_pip_thread_func, kInitW, kInitH);
+
+    // Spin briefly until the pip window thread has created the HWND
+    for (int i = 0; i < 200 && !g_win.pip_hwnd; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    if (!g_win.pip_hwnd) {
+        LOG_ERROR(LOG_PLATFORM, "Pip window failed to create");
+        if (g_win.pip_window_thread.joinable()) g_win.pip_window_thread.join();
+        return;
+    }
+
+    g_win.pip_phase.store(1, std::memory_order_release);
+    g_win.render_wake.signal();
+}
+
 static void win_cleanup() {
+    // Tear down pip window first, BEFORE signalling render_stop
+    win_close_detached_pip();
+
     // Stop render thread first (it holds the GL context)
     g_win.render_stop.signal();
     g_win.render_wake.signal();  // unblock in case it's waiting
@@ -1417,6 +1751,8 @@ Platform make_windows_platform() {
         .set_titlebar_color = win_set_titlebar_color,
         .set_mini_player_hole = win_set_mini_player_hole,
         .store_pip_params = win_store_pip_params,
+        .open_detached_pip = win_open_detached_pip,
+        .close_detached_pip = win_close_detached_pip,
         .clipboard_read_text_async = win_clipboard_read_text_async,
         .open_external_url = win_open_external_url,
     };

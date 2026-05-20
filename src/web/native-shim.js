@@ -347,6 +347,7 @@
 
     // ─── PiP mini-player ─────────────────────────────────────────────────────
     window._mpvMiniPlayerActive = false;
+    window._mpvDetachedPipActive = false;
     // Authoritative display aspect ratio from mpv (video-params/aspect).
     // 0 = not yet received; falls back to metadata or 16:9 in that case.
     window._pipVideoAspect = 0;
@@ -356,6 +357,13 @@
         // If a PiP panel is active, refresh its geometry to the correct AR.
         const panel = document.getElementById('jmp-pip-panel');
         if (panel && panel._refreshAspect) panel._refreshAspect(ratio);
+    };
+
+    // Called by C++ (via execJs) when the user closes the detached pip window.
+    window._nativeOnPipWindowClosed = function() {
+        window._mpvDetachedPipActive = false;
+        // Restore video to full-screen in the main window
+        window.api.player.setVideoRectangle(0, 0, 0, 0);
     };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -659,6 +667,7 @@
             { key: 'bar',     icon: '▬', label: 'Bottom Bar',     desc: 'Full-width bar with live video' },
             { key: 'float',   icon: '⧉', label: 'Floating Panel',  desc: 'Draggable, resizable panel' },
             { key: 'minimal', icon: '⊡', label: 'Minimal Overlay', desc: 'Video only, controls on hover' },
+            { key: 'detach',  icon: '⊟', label: 'Pop-Out Window',  desc: 'Separate always-on-top window' },
         ];
         const cur = localStorage.getItem('jmp_pip_mode') || 'bar';
 
@@ -727,6 +736,14 @@
 
             row.addEventListener('click', () => {
                 if (pop.parentNode) pop.parentNode.removeChild(pop);
+                if (m.key === 'detach') {
+                    // Detached mode: open a separate always-on-top pip window
+                    if (!window._mpvDetachedPipActive) {
+                        jmpNative.openDetachedPip();
+                        window._mpvDetachedPipActive = true;
+                    }
+                    return;
+                }
                 if (m.key === cur) return;
                 localStorage.setItem('jmp_pip_mode', m.key);
                 window._nativeExitMiniPlayer();
@@ -1264,6 +1281,11 @@
     };
 
     window._nativeExitMiniPlayer = function() {
+        if (window._mpvDetachedPipActive) {
+            jmpNative.closeDetachedPip();
+            window._mpvDetachedPipActive = false;
+            window.api.player.setVideoRectangle(0, 0, 0, 0);
+        }
         const panel = document.getElementById('jmp-pip-panel');
         if (!panel) { window._mpvMiniPlayerActive = false; return; }
         _pipUnwireSignals(panel);
@@ -1284,6 +1306,7 @@
     // ── Global PiP hotkeys ────────────────────────────────────────────────────
     // All use Ctrl+Shift to avoid conflicts with normal app or OS shortcuts.
     //   Ctrl+Shift+P     – toggle PiP on/off
+    //   Ctrl+Shift+O     – toggle detached pop-out window
     //   Ctrl+Shift+M     – cycle PiP mode (bar → float → minimal → bar)
     //   Ctrl+Shift+L     – toggle pin lock (float mode)
     //   Ctrl+Shift+C     – cycle corner (float mode)
@@ -1307,6 +1330,18 @@
                     const pl = window._mpvVideoPlayerInstance;
                     if (pl && typeof pl.togglePictureInPicture === 'function') pl.togglePictureInPicture();
                     else window._nativeEnterMiniPlayer();
+                }
+                return;
+            }
+            if (k === 'O' || k === 'o') {
+                e.preventDefault();
+                if (window._mpvDetachedPipActive) {
+                    jmpNative.closeDetachedPip();
+                    window._mpvDetachedPipActive = false;
+                    window.api.player.setVideoRectangle(0, 0, 0, 0);
+                } else {
+                    jmpNative.openDetachedPip();
+                    window._mpvDetachedPipActive = true;
                 }
                 return;
             }

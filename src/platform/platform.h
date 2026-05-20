@@ -126,6 +126,12 @@ struct Platform {
     void (*store_pip_params)(double x, double y, double w, double h,
                              double ar) = nullptr;
 
+    // Open/close a detached always-on-top PiP window that renders video
+    // directly to a separate HWND swap chain (bypasses the DComp tree).
+    // Windows-only; null on other platforms.
+    void (*open_detached_pip)() = nullptr;
+    void (*close_detached_pip)() = nullptr;
+
     // Whether the GPU can produce shared textures (dmabufs). Set during init.
     // When false, CEF should use software rendering (OnPaint) instead of
     // OnAcceleratedPaint, and present_software / overlay_present_software

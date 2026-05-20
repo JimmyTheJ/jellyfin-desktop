@@ -91,6 +91,7 @@ CefRefPtr<CefDictionaryValue> WebBrowser::injectionProfile() {
         "appExit", "setSettingValue", "themeColor",
         "setOsdVisible", "setCursorVisible", "toggleFullscreen",
         "menuItemSelected", "menuDismissed",
+        "openDetachedPip", "closeDetachedPip",
     };
     static const char* const kScripts[] = {
         "native-shim.js",
@@ -341,6 +342,10 @@ bool WebBrowser::handleMessage(const std::string& name,
             if (g_platform.store_pip_params)
                 g_platform.store_pip_params(x, y, w, h, video_ar);
         }
+    } else if (name == "openDetachedPip") {
+        if (g_platform.open_detached_pip) g_platform.open_detached_pip();
+    } else if (name == "closeDetachedPip") {
+        if (g_platform.close_detached_pip) g_platform.close_detached_pip();
     } else {
         return false;
     }
