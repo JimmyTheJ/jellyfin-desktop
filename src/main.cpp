@@ -187,6 +187,7 @@ static void mpv_digest_thread() {
                     if (g_platform.in_transition())
                         g_platform.set_expected_size(me.pw, me.ph);
                     g_platform.resize(me.lw, me.lh, me.pw, me.ph);
+                    mpv::set_window_pixels(me.pw, me.ph);
                 }
             }
             if (me.type == MpvEventType::FULLSCREEN) {

@@ -97,8 +97,8 @@ MpvEvent digest_property(uint64_t id, mpv_event_property* p) {
 #endif
         // Keep the "effective pixel size" cache current so shutdown's
         // geometry save reflects the latest resize, not just the boot-time
-        // value seeded by set_window_pixels.
-        mpv::set_window_pixels(ev.pw, ev.ph);
+        // value seeded by set_window_pixels. Updated in the caller (main.cpp)
+        // under the pip_detached_active guard so pip FBO dims don't corrupt it.
         break;
     }
     case MPV_OBSERVE_PAUSE:

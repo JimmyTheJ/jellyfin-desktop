@@ -207,6 +207,7 @@ static GLenum (APIENTRY* gl_CheckFramebufferStatus_)(GLenum)            = nullpt
 static void win_begin_transition_locked();
 static void win_end_transition_locked();
 static void win_clamp_window_geometry(int* w, int* h, int* x, int* y);
+static void win_close_detached_pip();
 
 // =====================================================================
 // D3D11 / DXGI / DComp initialization
@@ -1195,6 +1196,11 @@ static LRESULT CALLBACK pip_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_CLOSE:
         // User closed the window (title bar X, Alt+F4, Esc, or double-click).
+        // Clear pip_hwnd/tid before notifying main window so that
+        // win_close_detached_pip (which runs on a background thread) never
+        // posts WM_APP_PIP_DESTROY back to an already-destroyed HWND.
+        g_win.pip_hwnd = nullptr;
+        g_win.pip_window_tid = 0;
         PostMessageW(g_win.mpv_hwnd, WM_APP_PIP_CLOSED, 0, 0);
         DestroyWindow(hwnd);
         return 0;
@@ -1352,6 +1358,9 @@ static LRESULT CALLBACK our_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     if (msg == WM_APP_PIP_CLOSED) {
         if (g_web_browser)
             g_web_browser->execJs("if(window._nativeOnPipWindowClosed)window._nativeOnPipWindowClosed()");
+        // win_close_detached_pip blocks waiting for the render thread ack, so
+        // we must not call it on the window message pump thread.
+        std::thread([]() { win_close_detached_pip(); }).detach();
         return 0;
     }
 
