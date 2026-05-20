@@ -1094,10 +1094,21 @@ static void render_thread_func(std::promise<bool> init_promise) {
         if (!g_win.renderer.render(static_cast<int>(g_win.gl_fbo), fw, fh))
             continue;
 
-        // Readback into pixel_buf (BGRA, top-down because flip_y=1)
+        // Readback. flip_y=1 causes the same double-inversion for D3D11 upload
+        // as for the HWND swap chain (see pip path above), so reverse row order.
         gl_BindFramebuffer_(GL_FRAMEBUFFER, g_win.gl_fbo);
         glReadPixels(0, 0, fw, fh, GL_BGRA, GL_UNSIGNED_BYTE, g_win.pixel_buf.data());
         gl_BindFramebuffer_(GL_FRAMEBUFFER, 0);
+
+        {
+            const size_t stride = static_cast<size_t>(fw) * 4;
+            uint8_t* buf = g_win.pixel_buf.data();
+            for (int row = 0; row < fh / 2; ++row) {
+                std::swap_ranges(buf + row * stride,
+                                 buf + row * stride + stride,
+                                 buf + (fh - 1 - row) * stride);
+            }
+        }
 
         g_win.renderer.report_swap();
 
