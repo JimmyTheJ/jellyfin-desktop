@@ -1560,6 +1560,10 @@ static void win_open_detached_pip() {
         return;
     }
 
+    // Seed initial dimensions before making phase=1 visible to render thread,
+    // so it can create the FBO on the very first wake even if WM_SIZE hasn't fired.
+    g_win.pending_pip_w.store(kInitW, std::memory_order_relaxed);
+    g_win.pending_pip_h.store(kInitH, std::memory_order_relaxed);
     g_win.pip_phase.store(1, std::memory_order_release);
     g_win.render_wake.signal();
 }

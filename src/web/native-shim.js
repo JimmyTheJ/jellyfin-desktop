@@ -737,8 +737,11 @@
             row.addEventListener('click', () => {
                 if (pop.parentNode) pop.parentNode.removeChild(pop);
                 if (m.key === 'detach') {
-                    // Detached mode: open a separate always-on-top pip window
+                    // Detached mode: open a separate always-on-top pip window.
+                    // Exit mini-player first so the video rect is reset to full-screen
+                    // before mpv starts rendering into the pip FBO.
                     if (!window._mpvDetachedPipActive) {
+                        window._nativeExitMiniPlayer();
                         jmpNative.openDetachedPip();
                         window._mpvDetachedPipActive = true;
                     }
@@ -1340,6 +1343,7 @@
                     window._mpvDetachedPipActive = false;
                     window.api.player.setVideoRectangle(0, 0, 0, 0);
                 } else {
+                    window._nativeExitMiniPlayer();
                     jmpNative.openDetachedPip();
                     window._mpvDetachedPipActive = true;
                 }
