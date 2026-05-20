@@ -179,9 +179,15 @@ static void mpv_digest_thread() {
             if (me.type == MpvEventType::NONE) continue;
             if (me.type == MpvEventType::OSD_DIMS) {
                 if (me.lw <= 0 || me.lh <= 0) continue;
-                if (g_platform.in_transition())
-                    g_platform.set_expected_size(me.pw, me.ph);
-                g_platform.resize(me.lw, me.lh, me.pw, me.ph);
+                // While detached pip is active, osd-dimensions reflects the pip
+                // FBO size, not the main window. Skip resize so mpv_pw/mpv_ph
+                // are not corrupted to pip dims (which would reject full-size
+                // CEF buffers as "oversized" and blank the main window).
+                if (!g_platform.pip_detached_active || !g_platform.pip_detached_active()) {
+                    if (g_platform.in_transition())
+                        g_platform.set_expected_size(me.pw, me.ph);
+                    g_platform.resize(me.lw, me.lh, me.pw, me.ph);
+                }
             }
             if (me.type == MpvEventType::FULLSCREEN) {
                 g_platform.set_fullscreen(me.flag);

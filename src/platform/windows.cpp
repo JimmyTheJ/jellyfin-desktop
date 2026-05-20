@@ -1170,6 +1170,17 @@ static LRESULT CALLBACK pip_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         return 0;
 
+    case WM_KEYDOWN:
+        switch (wParam) {
+        case VK_ESCAPE:
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        case VK_SPACE:
+            g_mpv.TogglePause();
+            return 0;
+        }
+        break;
+
     case WM_NCHITTEST: {
         // Make the entire client area draggable; borders handled by DefWindowProc.
         LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -1178,13 +1189,12 @@ static LRESULT CALLBACK pip_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     case WM_NCLBUTTONDBLCLK:
-        // Double-click anywhere (inc. the drag caption area) → close pip.
-        PostMessageW(g_win.mpv_hwnd, WM_APP_PIP_CLOSED, 0, 0);
-        DestroyWindow(hwnd);
+        // Double-click anywhere → close pip.
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
         return 0;
 
     case WM_CLOSE:
-        // User clicked the (invisible) close affordance or pressed Alt+F4.
+        // User closed the window (title bar X, Alt+F4, Esc, or double-click).
         PostMessageW(g_win.mpv_hwnd, WM_APP_PIP_CLOSED, 0, 0);
         DestroyWindow(hwnd);
         return 0;
@@ -1204,9 +1214,12 @@ static LRESULT CALLBACK pip_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 static void win_pip_thread_func(int initial_w, int initial_h) {
+    constexpr DWORD kPipStyle   = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME;
+    constexpr DWORD kPipExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+
     RECT wr{0, 0, initial_w, initial_h};
     UINT dpi = GetDpiForSystem();
-    AdjustWindowRectExForDpi(&wr, WS_POPUP | WS_THICKFRAME, FALSE, WS_EX_TOPMOST | WS_EX_TOOLWINDOW, dpi);
+    AdjustWindowRectExForDpi(&wr, kPipStyle, FALSE, kPipExStyle, dpi);
     int win_w = wr.right - wr.left;
     int win_h = wr.bottom - wr.top;
 
@@ -1218,9 +1231,9 @@ static void win_pip_thread_func(int initial_w, int initial_h) {
     int pos_y = mi.rcWork.bottom - win_h - 20;
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        kPipExStyle,
         L"JellyfinDesktopPip", L"Picture in Picture",
-        WS_POPUP | WS_THICKFRAME,
+        kPipStyle,
         pos_x, pos_y, win_w, win_h,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
 
