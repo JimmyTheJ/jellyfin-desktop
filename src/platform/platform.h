@@ -132,6 +132,11 @@ struct Platform {
     void (*open_detached_pip)() = nullptr;
     void (*close_detached_pip)() = nullptr;
 
+    // Returns true while a detached pip window is active (pip_phase != 0).
+    // During this time osd-dimensions reflects the pip FBO, not the main window.
+    // Windows-only; null (= inactive) on other platforms.
+    bool (*pip_detached_active)() = nullptr;
+
     // Whether the GPU can produce shared textures (dmabufs). Set during init.
     // When false, CEF should use software rendering (OnPaint) instead of
     // OnAcceleratedPaint, and present_software / overlay_present_software

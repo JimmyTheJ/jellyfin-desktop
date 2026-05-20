@@ -1802,6 +1802,7 @@ Platform make_windows_platform() {
         .store_pip_params = win_store_pip_params,
         .open_detached_pip = win_open_detached_pip,
         .close_detached_pip = win_close_detached_pip,
+        .pip_detached_active = []() { return g_win.pip_phase.load(std::memory_order_relaxed) != 0; },
         .clipboard_read_text_async = win_clipboard_read_text_async,
         .open_external_url = win_open_external_url,
     };
