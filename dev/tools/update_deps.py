@@ -6,8 +6,6 @@ import logging
 import sys
 
 import update_cef
-import update_doctest
-import update_quill
 
 
 def main():
@@ -22,12 +20,9 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     if args.check:
-        results = [update_cef.check(), update_doctest.check(), update_quill.check()]
-        sys.exit(0 if all(results) else 1)
+        sys.exit(0 if update_cef.check() else 1)
 
     update_cef.update()
-    update_doctest.update()
-    update_quill.update()
 
 
 if __name__ == "__main__":

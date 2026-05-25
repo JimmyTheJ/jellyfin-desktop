@@ -25,7 +25,7 @@ function cancellableDelay(ms, label) {
     return new Promise((resolve, reject) => {
         const t = setTimeout(() => { cancelWait = null; resolve(); }, ms);
         cancelWait = () => {
-            console.log('Cancelling ' + label + ' timer', t);
+            console.debug('Cancelling ' + label + ' timer', t);
             clearTimeout(t);
             cancelWait = null;
             reject(new Error('cancelled'));
@@ -35,11 +35,11 @@ function cancellableDelay(ms, label) {
 
 async function tryConnect(server, spinnerStartTime = Date.now()) {
     try {
-        console.log("Checking connectivity to:", server);
+        console.debug("Checking connectivity to:", server);
 
         const resolvedUrl = await window.jmpCheckServerConnectivity(server);
         console.log("Server connectivity check passed");
-        console.log("Resolved URL:", resolvedUrl);
+        console.debug("Resolved URL:", resolvedUrl);
 
         if (!isConnecting) return false;
 
@@ -75,7 +75,7 @@ async function tryConnect(server, spinnerStartTime = Date.now()) {
         return true;
     } catch (e) {
         if (/cancel/i.test(e && e.message)) {
-            console.log("Connection cancelled");
+            console.debug("Connection cancelled");
         } else {
             console.error("Server connectivity check failed:", e);
         }
@@ -101,6 +101,31 @@ const cancelOnEscape = (e) => {
     }
 };
 
+const showConnectionFailedDialog = () => {
+    const dialog = document.createElement('div');
+    dialog.className = 'dialog scaleIn';
+
+    const header = document.createElement('h1');
+    header.innerText = headerConnectionFailureText;
+
+    const message = document.createElement('div');
+    message.innerText = messageUnableToConnectToServerText;
+    message.className = 'dialog-message';
+
+    const button = document.createElement('button');
+    button.innerText = buttonGotItText;
+    button.type = 'button';
+    button.className = 'dialog-button';
+    button.addEventListener('click', (e) => {
+        dialog.remove();
+    });
+
+    dialog.appendChild(header);
+    dialog.appendChild(message);
+    dialog.appendChild(button);
+    document.body.appendChild(dialog);
+};
+
 const startConnecting = async () => {
     const address = document.getElementById('address');
     const title = document.getElementById('title');
@@ -108,6 +133,7 @@ const startConnecting = async () => {
     const button = document.getElementById('connect-button');
     const server = address.value;
 
+    // Show connecting UI
     isConnecting = true;
     title.textContent = '';
     title.style.visibility = 'hidden';
@@ -133,13 +159,14 @@ const startConnecting = async () => {
         button.style.visibility = 'visible';
         document.removeEventListener('keydown', cancelOnEscape);
         updateButtonState();
+        showConnectionFailedDialog();
     }
 };
 
 const cancelConnection = () => {
     if (!isConnecting) return;
 
-    console.log("Cancelling connection");
+    console.debug("Cancelling connection");
     // Native resets main on cancelServerConnectivity.
     mainLoaded = false;
     isConnecting = false;
@@ -151,21 +178,6 @@ const cancelConnection = () => {
         window.jmpCheckServerConnectivity.abort();
     }
     if (cancelWait) cancelWait();
-
-    const address = document.getElementById('address');
-    const title = document.getElementById('title');
-    const spinner = document.getElementById('spinner');
-    const button = document.getElementById('connect-button');
-
-    title.textContent = document.getElementById('title').getAttribute('data-original-text');
-    title.style.visibility = 'visible';
-    address.classList.remove('connecting');
-    address.style.visibility = 'visible';
-    address.disabled = false;
-    spinner.style.display = 'none';
-    button.style.visibility = 'visible';
-    document.removeEventListener('keydown', cancelOnEscape);
-    updateButtonState();
 };
 
 // Button click handler
@@ -204,52 +216,21 @@ document.addEventListener('keydown', (e) => {
     console.log('Auto-connect: starting');
 
     const savedServer = await savedServerUrlReady;
-    console.log('Auto-connect: savedServer =', savedServer);
+    console.debug('Auto-connect: savedServer =', savedServer);
 
     if (savedServer) {
-        console.log('Auto-connect: checking saved server', savedServer);
+        console.debug('Auto-connect: checking saved server', savedServer);
 
         // main.cpp pre-loads the saved URL into the main browser in parallel
         // with overlay startup, so don't issue a redundant navigateMain.
         mainLoaded = true;
 
         const address = document.getElementById('address');
-        const title = document.getElementById('title');
-        const spinner = document.getElementById('spinner');
-        const button = document.getElementById('connect-button');
 
         // Set address value for potential display later
         address.value = savedServer;
 
-        // Show connecting UI
-        isConnecting = true;
-        title.textContent = '';
-        title.style.visibility = 'hidden';
-        address.classList.add('connecting');
-        address.style.visibility = 'hidden';
-        address.disabled = true;
-        spinner.style.display = 'block';
-        const spinnerStart = Date.now();
-        button.style.visibility = 'hidden';
-        document.addEventListener('keydown', cancelOnEscape);
-
-        // C++ handles retries, just wait for result
-        const connected = await tryConnect(savedServer, spinnerStart);
-
-        if (!connected) {
-            // User cancelled or error - show UI
-            isConnecting = false;
-            title.textContent = document.getElementById('title').getAttribute('data-original-text');
-            title.style.visibility = 'visible';
-            address.classList.remove('connecting');
-            address.style.visibility = 'visible';
-            address.disabled = false;
-            spinner.style.display = 'none';
-            button.style.visibility = 'visible';
-            document.removeEventListener('keydown', cancelOnEscape);
-            address.focus();
-            updateButtonState();
-        }
+        startConnecting();
     } else {
         const title = document.getElementById('title');
         const address = document.getElementById('address');

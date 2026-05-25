@@ -1,5 +1,6 @@
 # Setup Windows development environment for jellyfin-desktop
-# Prerequisites: Visual Studio 2022, Python 3, 7-Zip, CMake, Ninja
+# Prerequisites: Visual Studio 2022, Python 3, 7-Zip, CMake (needed by
+# cef-dll-sys to build libcef_dll_wrapper), Ninja, meson, Rust.
 
 param(
     [switch]$SkipMpv,
@@ -26,12 +27,20 @@ $Prerequisites = @(
     @{ Command = "cmake";  Name = "CMake";     WingetId = "Kitware.CMake" },
     @{ Command = "ninja";  Name = "Ninja";     WingetId = "Ninja-build.Ninja" },
     @{ Command = "7z";     Name = "7-Zip";     WingetId = "7zip.7zip" },
-    @{ Command = "git";    Name = "Git";       WingetId = "Git.Git" }
+    @{ Command = "git";    Name = "Git";       WingetId = "Git.Git" },
+    @{ Command = "cargo";  Name = "Rust";      WingetId = "Rustlang.Rustup" }
 )
 
 function Find-Command($Command) {
     # Check PATH first
     if (Test-Command $Command) { return $true }
+    # Rustup installs cargo/rustc under %USERPROFILE%\.cargo\bin, not in PATH
+    # until shell restart
+    $CargoBin = Join-Path $env:USERPROFILE ".cargo\bin\$Command.exe"
+    if (Test-Path $CargoBin) {
+        $env:Path += ";$(Split-Path $CargoBin)"
+        return $true
+    }
     # Some installers (e.g. 7-Zip) don't add to PATH - search Program Files
     $Exe = Get-ChildItem -Path "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:LocalAppData" `
         -Filter "$Command.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -100,7 +109,13 @@ if (-not $SkipCef) {
 if (-not $SkipMpv) {
     Write-Host ""
     Write-Host "=== libmpv ===" -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot "build_mpv_source.ps1")
+    if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+        Write-Host "PowerShell 7 not found, installing via winget..." -ForegroundColor Yellow
+        winget install --source winget --accept-package-agreements --accept-source-agreements Microsoft.PowerShell
+        $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    }
+    pwsh -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "build_mpv_source.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "libmpv build failed" }
 }
 
 Write-Host ""
@@ -109,9 +124,6 @@ Write-Host ""
 Write-Host "To build:"
 Write-Host "  1. Open 'x64 Native Tools Command Prompt for VS 2022'"
 Write-Host "  2. Navigate to repository: cd $RepoRoot"
-Write-Host "  3. Configure:"
-Write-Host "     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo"
-Write-Host "  4. Build:"
-Write-Host "     cmake --build build"
+Write-Host "  3. Run: cargo xtask build"
 Write-Host ""
-Write-Host "Or use dev\windows\build.ps1 for a complete build"
+Write-Host "Or use dev\windows\build.ps1 for the full build flow (loads vcvars and sets LIBCLANG_PATH)."

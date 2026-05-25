@@ -1,5 +1,5 @@
 (function() {
-    console.log('[Media] Installing native shim...');
+    console.debug('[Media] Installing native shim...');
 
     // Fullscreen state tracking via HTML5 Fullscreen API
     window._isFullscreen = false;
@@ -18,7 +18,7 @@
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && window._isFullscreen) {
-            document.exitFullscreen().catch(() => {});
+            window.jmpNative.toggleFullscreen();
         }
     });
 
@@ -62,12 +62,12 @@
         };
         signal.connect = (cb) => {
             callbacks.push(cb);
-            console.log('[Media] [Signal] ' + name + ' connected, now has', callbacks.length, 'listeners');
+            console.debug('[Media] [Signal] ' + name + ' connected, now has', callbacks.length, 'listeners');
         };
         signal.disconnect = (cb) => {
             const idx = callbacks.indexOf(cb);
             if (idx >= 0) callbacks.splice(idx, 1);
-            console.log('[Media] [Signal] ' + name + ' disconnected, now has', callbacks.length, 'listeners');
+            console.debug('[Media] [Signal] ' + name + ' disconnected, now has', callbacks.length, 'listeners');
         };
         return signal;
     }
@@ -77,15 +77,16 @@
 
     // window.jmpInfo - settings and device info
     window.jmpInfo = {
-        version: '1.0.0',
-        deviceName: 'Jellyfin Desktop',
+        version: '__APP_VERSION__',
+        deviceName: _savedSettings.deviceName || _savedSettings.deviceNameDefault,
         mode: 'desktop',
         userAgent: navigator.userAgent,
         scriptPath: '',
         sections: [
             { key: 'playback', order: 0 },
             { key: 'audio', order: 1 },
-            { key: 'advanced', order: 2 }
+            { key: 'transcode', order: 2 },
+            { key: 'advanced', order: 3 }
         ],
         settings: {
             main: { enableMPV: true, fullscreen: false, userWebClient: '__SERVER_URL__' },
@@ -98,9 +99,14 @@
                 audioChannels: _savedSettings.audioChannels || '',
                 audioNormalization: _savedSettings.audioNormalization || ''
             },
+            transcode: {
+                forceTranscoding: !!_savedSettings.forceTranscoding
+            },
             advanced: {
                 transparentTitlebar: _savedSettings.transparentTitlebar !== false,
-                logLevel: _savedSettings.logLevel || ''
+                titlebarThemeColor: _savedSettings.titlebarThemeColor !== false,
+                logLevel: _savedSettings.logLevel || '',
+                deviceName: _savedSettings.deviceName || ''
             }
         },
         settingsDescriptions: {
@@ -123,7 +129,11 @@
                     { value: 'lavfi=[loudnorm=I=-18:TP=-1.5:LRA=11,acompressor=threshold=0.063:ratio=8:attack=200:release=1000:makeup=3.16]', title: 'Night Mode (Maximum Compression)' }
                 ]}
             ],
+            transcode: [
+                { key: 'forceTranscoding', displayName: 'Force Transcoding', help: 'Always request a transcoded stream from the server, even when direct play would work.' }
+            ],
             advanced: [
+                { key: 'deviceName', displayName: 'Device Name', help: 'Identifies this machine to the server. Leave blank to use the system hostname.', inputType: 'text', maxLength: 64, placeholder: _savedSettings.deviceNameDefault },
                 { key: 'logLevel', displayName: 'Log Level', help: 'Set the application log verbosity level.', options: [
                     { value: '', title: 'Default (Info)' },
                     { value: 'verbose', title: 'Verbose' },
@@ -143,6 +153,15 @@
             key: 'transparentTitlebar',
             displayName: 'Transparent Titlebar',
             help: 'Overlay traffic light buttons on the window content instead of a separate titlebar. Requires restart.'
+        });
+    }
+
+    // Titlebar theme color toggle (only when build supports KDE palette protocol)
+    if (__KDE_PALETTE_SUPPORTED__) {
+        jmpInfo.settingsDescriptions.advanced.unshift({
+            key: 'titlebarThemeColor',
+            displayName: 'Titlebar Theme Color',
+            help: 'Set titlebar color to match Jellyfin theme'
         });
     }
 
@@ -176,9 +195,8 @@
             onMetaData: createSignal('onMetaData'),
 
             // Methods
-            load(url, options, streamdata, audioStream, subtitleStream, callback) {
-                console.log('[Media] player.load:', url);
-                window._jmpVideoActive = streamdata?.type === 'video';
+            load(url, options, streamdata, videoStream, audioStream, subtitleStream, externalAudioUrl, externalSubUrl, callback) {
+                console.debug('[Media] player.load:', url);
                 if (callback) {
                     // Wait for playing signal before calling callback
                     const onPlaying = () => {
@@ -196,63 +214,67 @@
                 }
                 if (window.jmpNative && window.jmpNative.playerLoad) {
                     const metadataJson = streamdata?.metadata ? JSON.stringify(streamdata.metadata) : '{}';
-                    window.jmpNative.playerLoad(url, options.startMilliseconds, audioStream, subtitleStream, metadataJson);
+                    window.jmpNative.playerLoad(url, options.startMilliseconds, videoStream, audioStream, subtitleStream, metadataJson, externalAudioUrl || '', externalSubUrl || '', !!options.isInfiniteStream);
                 }
             },
             stop() {
-                console.log('[Media] player.stop');
-                restoreThemeColor();
+                console.debug('[Media] player.stop');
                 if (window.jmpNative) window.jmpNative.playerStop();
             },
             pause() {
-                console.log('[Media] player.pause');
+                console.debug('[Media] player.pause');
                 if (window.jmpNative) window.jmpNative.playerPause();
                 playerState.paused = true;
             },
             play() {
-                console.log('[Media] player.play');
+                console.debug('[Media] player.play');
                 if (window.jmpNative) window.jmpNative.playerPlay();
                 playerState.paused = false;
             },
             seekTo(ms) {
-                console.log('[Media] player.seekTo:', ms);
+                console.debug('[Media] player.seekTo:', ms);
                 if (window.jmpNative) window.jmpNative.playerSeek(ms);
             },
             setVolume(vol) {
-                console.log('[Media] player.setVolume:', vol);
+                console.debug('[Media] player.setVolume:', vol);
                 playerState.volume = vol;
                 if (window.jmpNative) window.jmpNative.playerSetVolume(vol);
             },
             setMuted(muted) {
-                console.log('[Media] player.setMuted:', muted);
+                console.debug('[Media] player.setMuted:', muted);
                 playerState.muted = muted;
                 if (window.jmpNative) window.jmpNative.playerSetMuted(muted);
             },
             setPlaybackRate(rate) {
-                console.log('[Media] player.setPlaybackRate:', rate);
+                console.debug('[Media] player.setPlaybackRate:', rate);
                 if (window.jmpNative) window.jmpNative.playerSetSpeed(rate);
             },
             setSubtitleStream(index) {
-                console.log('[Media] player.setSubtitleStream:', index);
+                console.debug('[Media] player.setSubtitleStream:', index);
                 if (window.jmpNative) window.jmpNative.playerSetSubtitle(index);
             },
             addSubtitleStream(url) {
-                console.log('[Media] player.addSubtitleStream:', url);
+                console.debug('[Media] player.addSubtitleStream:', url);
                 if (window.jmpNative) window.jmpNative.playerAddSubtitle(url);
             },
             setAudioStream(index) {
-                console.log('[Media] player.setAudioStream:', index);
+                console.debug('[Media] player.setAudioStream:', index);
                 if (window.jmpNative) window.jmpNative.playerSetAudio(index);
             },
+            addAudioStream(url) {
+                console.debug('[Media] player.addAudioStream:', url);
+                if (window.jmpNative) window.jmpNative.playerAddAudio(url);
+            },
             setSubtitleDelay(ms) {
-                console.log('[Media] player.setSubtitleDelay:', ms);
+                console.debug('[Media] player.setSubtitleDelay:', ms);
+                if (window.jmpNative) window.jmpNative.playerSetSubtitleDelay(ms / 1000.0);
             },
             setAudioDelay(ms) {
-                console.log('[Media] player.setAudioDelay:', ms);
+                console.debug('[Media] player.setAudioDelay:', ms);
                 if (window.jmpNative) window.jmpNative.playerSetAudioDelay(ms / 1000.0);
             },
             setAspectMode(mode) {
-                console.log('[Media] player.setAspectMode:', mode);
+                console.debug('[Media] player.setAspectMode:', mode);
                 if (window.jmpNative) window.jmpNative.playerSetAspectMode(mode);
             },
             setVideoRectangle(x, y, w, h, ar) {
@@ -283,7 +305,11 @@
         settings: {
             setValue(section, key, value, callback) {
                 if (window.jmpNative && window.jmpNative.setSettingValue) {
-                    window.jmpNative.setSettingValue(section, key, typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value));
+                    let serialized;
+                    if (typeof value === 'boolean')      serialized = value ? 'true' : 'false';
+                    else if (Array.isArray(value))       serialized = JSON.stringify(value);
+                    else                                 serialized = String(value);
+                    window.jmpNative.setSettingValue(section, key, serialized);
                 }
                 if (callback) callback();
             },
@@ -306,11 +332,11 @@
 
     // Expose signal emitter for native code
     window._nativeEmit = function(signal, ...args) {
-        console.log('[Media] _nativeEmit called with signal:', signal, 'args:', args);
+        console.debug('[Media] _nativeEmit called with signal:', signal, 'args:', args);
         if (signal === 'paused') playerState.paused = true;
         else if (signal === 'playing') playerState.paused = false;
         if (window.api && window.api.player && window.api.player[signal]) {
-            console.log('[Media] Firing signal:', signal);
+            console.debug('[Media] Firing signal:', signal);
             window.api.player[signal](...args);
         } else {
             console.error('[Media] Signal not found:', signal, 'api exists:', !!window.api);
@@ -333,15 +359,15 @@
     };
     // Native emitters for media session control commands
     window._nativeHostInput = function(actions) {
-        console.log('[Media] _nativeHostInput:', actions);
+        console.debug('[Media] _nativeHostInput:', actions);
         window.api.input.hostInput(actions);
     };
     window._nativeSetRate = function(rate) {
-        console.log('[Media] _nativeSetRate:', rate);
+        console.debug('[Media] _nativeSetRate:', rate);
         window.api.input.rateChanged(rate);
     };
     window._nativeSeek = function(positionMs) {
-        console.log('[Media] _nativeSeek:', positionMs);
+        console.debug('[Media] _nativeSeek:', positionMs);
         window.api.input.positionSeek(positionMs);
     };
 
@@ -1547,44 +1573,12 @@
         }
     };
 
-    // Device profile for direct play
+    // Device profile for direct play. Built in C++ at startup from mpv's
+    // actual decoder/demuxer/protocol support and injected here as a JSON
+    // literal (JSON is a subset of JS object syntax, so no parse needed).
+    const _deviceProfile = __DEVICE_PROFILE_JSON__;
     function getDeviceProfile() {
-        return {
-            Name: 'Jellyfin Desktop',
-            MaxStaticBitrate: 1000000000,
-            MusicStreamingTranscodingBitrate: 1280000,
-            TimelineOffsetSeconds: 5,
-            TranscodingProfiles: [
-                { Type: 'Audio' },
-                {
-                    Container: 'ts',
-                    Type: 'Video',
-                    Protocol: 'hls',
-                    AudioCodec: 'aac,mp3,ac3,opus,vorbis',
-                    VideoCodec: 'h264,h265,hevc,mpeg4,mpeg2video',
-                    MaxAudioChannels: '6'
-                },
-                { Container: 'jpeg', Type: 'Photo' }
-            ],
-            DirectPlayProfiles: [
-                { Type: 'Video' },
-                { Type: 'Audio' },
-                { Type: 'Photo' }
-            ],
-            ResponseProfiles: [],
-            ContainerProfiles: [],
-            CodecProfiles: [],
-            SubtitleProfiles: [
-                { Format: 'srt', Method: 'External' },
-                { Format: 'srt', Method: 'Embed' },
-                { Format: 'ass', Method: 'External' },
-                { Format: 'ass', Method: 'Embed' },
-                { Format: 'sub', Method: 'Embed' },
-                { Format: 'ssa', Method: 'Embed' },
-                { Format: 'pgssub', Method: 'Embed' },
-                { Format: 'dvdsub', Method: 'Embed' }
-            ]
-        };
+        return _deviceProfile;
     }
 
     window.NativeShell.AppHost = {
@@ -1600,7 +1594,7 @@
         },
         supports(command) {
             const features = [
-                'filedownload', 'displaylanguage', 'htmlaudioautoplay',
+                'fileinput', 'filedownload', 'displaylanguage', 'htmlaudioautoplay',
                 'htmlvideoautoplay', 'externallinks', 'multiserver',
                 'fullscreenchange', 'remotevideo', 'displaymode',
                 'exitmenu', 'clientsettings'
@@ -1626,11 +1620,6 @@
         }
     }
 
-    function restoreThemeColor() {
-        const meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) sendThemeColor(meta.content);
-    }
-
     function observeThemeColorMeta(meta) {
         sendThemeColor(meta.content);
         new MutationObserver(() => sendThemeColor(meta.content))
@@ -1643,10 +1632,11 @@
         // This CSS makes CEF report CT_NONE so the native side can hide the OS cursor.
         const style = document.createElement('style');
         let css = 'body.mouseIdle, body.mouseIdle * { cursor: none !important; }';
+        css += '\n@keyframes mpv-video-zoomin { from { transform: scale3d(0.2, 0.2, 0.2); opacity: 0.6; } to { transform: none; opacity: initial; } }';
 
         // macOS: offset UI elements so traffic lights don't overlap content
         if (navigator.platform.startsWith('Mac') && jmpInfo.settings.advanced.transparentTitlebar) {
-            css += '\n:root { --mac-titlebar-height: 28px; }';
+            css += '\n:root { --mac-titlebar-height: 22px; }';
             css += '\n.skinHeader { padding-top: var(--mac-titlebar-height) !important; }';
             css += '\n.mainAnimatedPage { top: var(--mac-titlebar-height) !important; }';
             css += '\n.touch-menu-la { padding-top: var(--mac-titlebar-height); }';
@@ -1670,15 +1660,6 @@
 
         style.textContent = css;
         document.head.appendChild(style);
-
-        // Titlebar black during video playback, restore theme color when done
-        window.api.player.playing.connect(() => {
-            if (window._jmpVideoActive) sendThemeColor('#000000');
-        });
-        window.api.player.finished.connect(() => { window._jmpVideoActive = false; restoreThemeColor(); });
-        window.api.player.stopped.connect(() => { window._jmpVideoActive = false; restoreThemeColor(); });
-        window.api.player.canceled.connect(() => { window._jmpVideoActive = false; restoreThemeColor(); });
-        window.api.player.error.connect(() => { window._jmpVideoActive = false; restoreThemeColor(); });
 
         // Watch for mouseIdle class on body and tell native to hide/show cursor.
         // Direct IPC is more reliable than CSS cursor:none → OnCursorChange in OSR mode.
@@ -1707,5 +1688,5 @@
         }
     });
 
-    console.log('[Media] Native shim installed');
+    console.debug('[Media] Native shim installed');
 })();

@@ -1,11 +1,27 @@
 # Linux-specific recipes (imported by top-level justfile)
 
-# Build AppImage (outputs to dist/)
-[linux]
-appimage:
-    ./dev/appimage/build.sh
+[private]
+mod linux_common 'linux_common.just'
 
-# Build Flatpak bundle (outputs to dist/)
+# Build the app
 [linux]
-flatpak:
-    ./dev/flatpak/build.sh
+build: linux_common::deps
+    cargo xtask build --mpv-cli
+
+# Run tests (cargo workspace)
+[linux]
+test: build
+    cargo test --manifest-path src/Cargo.toml --workspace
+
+# Run the app
+[linux]
+run *args: build
+    build/jellyfin-desktop --log-level=debug --log-file=build/run.log {{args}}
+
+# Run the mpv CLI
+[linux]
+run-mpv *args: build
+    build/mpv-build/mpv {{args}}
+
+mod appimage 'appimage/appimage.just'
+mod flatpak 'flatpak/flatpak.just'
