@@ -179,9 +179,16 @@ static void mpv_digest_thread() {
             if (me.type == MpvEventType::NONE) continue;
             if (me.type == MpvEventType::OSD_DIMS) {
                 if (me.lw <= 0 || me.lh <= 0) continue;
-                if (g_platform.in_transition())
-                    g_platform.set_expected_size(me.pw, me.ph);
-                g_platform.resize(me.lw, me.lh, me.pw, me.ph);
+                // While detached pip is active, osd-dimensions reflects the pip
+                // FBO size, not the main window. Skip resize so mpv_pw/mpv_ph
+                // are not corrupted to pip dims (which would reject full-size
+                // CEF buffers as "oversized" and blank the main window).
+                if (!g_platform.pip_detached_active || !g_platform.pip_detached_active()) {
+                    if (g_platform.in_transition())
+                        g_platform.set_expected_size(me.pw, me.ph);
+                    g_platform.resize(me.lw, me.lh, me.pw, me.ph);
+                    mpv::set_window_pixels(me.pw, me.ph);
+                }
             }
             if (me.type == MpvEventType::FULLSCREEN) {
                 g_platform.set_fullscreen(me.flag);
@@ -304,15 +311,20 @@ static void cef_consumer_thread() {
                     g_media_session->setPlaybackState(PlaybackState::Stopped);
                 break;
             case MpvEventType::OSD_DIMS:
-                if (g_web_browser->browser())
-                    g_web_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
-                if (g_overlay_browser && g_overlay_browser->browser()) {
-                    g_overlay_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
-                    g_platform.overlay_resize(ev.lw, ev.lh, ev.pw, ev.ph);
-                }
-                if (g_about_browser && g_about_browser->browser()) {
-                    g_about_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
-                    g_platform.about_resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                // Skip browser resize when detached pip is active: osd-dimensions
+                // reflects the pip FBO size, not the main window. Applying it would
+                // shrink all CEF browsers to the pip window dimensions.
+                if (!g_platform.pip_detached_active || !g_platform.pip_detached_active()) {
+                    if (g_web_browser->browser())
+                        g_web_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                    if (g_overlay_browser && g_overlay_browser->browser()) {
+                        g_overlay_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                        g_platform.overlay_resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                    }
+                    if (g_about_browser && g_about_browser->browser()) {
+                        g_about_browser->resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                        g_platform.about_resize(ev.lw, ev.lh, ev.pw, ev.ph);
+                    }
                 }
                 break;
             case MpvEventType::BUFFERED_RANGES: {
@@ -649,13 +661,17 @@ int main(int argc, char* argv[]) {
     }
 
     // --- Wait for VO (mpv needs a window before we can get platform handles) ---
-    // Both loops wait for an osd-dimensions property-change event carrying
-    // positive w/h, captured into mw/mh via mpv::read_osd_dims_from_event.
+    // On Windows, --vo=libmpv is used: mpv never creates its own OS window, so
+    // osd-dimensions never fires before the render context is created. Platform
+    // init creates the HWND and render thread; mw/mh come from there.
+    // On other platforms, both loops wait for an osd-dimensions property-change
+    // event carrying positive w/h, captured via mpv::read_osd_dims_from_event.
     // That's a struct read of the event payload — no mpv_get_property call —
     // so it's safe on macOS's main thread during VO init, where a synchronous
     // property read can deadlock against core_thread's DispatchQueue.main.sync.
-    LOG_INFO(LOG_MAIN, "Waiting for mpv window...");
     int64_t mw = 0, mh = 0;
+#ifndef _WIN32
+    LOG_INFO(LOG_MAIN, "Waiting for mpv window...");
     // Route every PROPERTY_CHANGE through digest_property, not just osd-dims.
     // Side effect: seeds the atomics (s_osd_pw/ph, s_fullscreen,
     // s_display_scale, ...) as mpv fires initial-value events, so platform
@@ -698,6 +714,7 @@ int main(int argc, char* argv[]) {
         if (try_consume_osd_dims(ev)) break;
     }
 #endif
+#endif // !_WIN32
 
     // --- Platform init ---
     // Resolve effective ozone platform so CEF clients can check it.
@@ -734,6 +751,15 @@ int main(int argc, char* argv[]) {
     LOG_INFO(LOG_MAIN, "[FLOW] CefInitialize returned ok");
 
     double display_hidpi_scale = 0.0;
+#ifdef _WIN32
+    // With --vo=libmpv, mpv has no window; mw/mh were set during platform init
+    // via mpv::set_window_pixels(). Read them back here.
+    mw = mpv::window_pw();
+    mh = mpv::window_ph();
+    display_hidpi_scale = static_cast<double>(g_platform.get_scale());
+    LOG_INFO(LOG_MAIN, "[FLOW] Windows RTT: window={}x{} scale={:.3f}", mw, mh,
+             display_hidpi_scale);
+#else
     mpv_get_property(g_mpv.Get(), "display-hidpi-scale",
                      MPV_FORMAT_DOUBLE, &display_hidpi_scale);
     int fs_flag = 0;
@@ -776,6 +802,7 @@ int main(int argc, char* argv[]) {
         }
         mpv::set_window_pixels(static_cast<int>(mw), static_cast<int>(mh));
     }
+#endif // _WIN32
 
     // --- Create browsers ---
     float scale = display_hidpi_scale > 0.0

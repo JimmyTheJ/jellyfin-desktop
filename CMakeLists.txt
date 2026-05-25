@@ -150,6 +150,7 @@ elseif(WIN32)
     )
     set(PLATFORM_SOURCES
         src/platform/windows.cpp
+        src/mpv/renderer.cpp
         src/input/input_windows.cpp
         src/paths/windows.cpp
         src/player/media_session.cpp
@@ -164,6 +165,7 @@ elseif(WIN32)
         dcomp
         crypt32
         windowsapp
+        opengl32
     )
 else()
     # Linux: Wayland + X11 backends (runtime selection)

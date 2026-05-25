@@ -347,6 +347,7 @@
 
     // ─── PiP mini-player ─────────────────────────────────────────────────────
     window._mpvMiniPlayerActive = false;
+    window._mpvDetachedPipActive = false;
     // Authoritative display aspect ratio from mpv (video-params/aspect).
     // 0 = not yet received; falls back to metadata or 16:9 in that case.
     window._pipVideoAspect = 0;
@@ -356,6 +357,152 @@
         // If a PiP panel is active, refresh its geometry to the correct AR.
         const panel = document.getElementById('jmp-pip-panel');
         if (panel && panel._refreshAspect) panel._refreshAspect(ratio);
+    };
+
+    // Called by C++ (via execJs) when the user closes the detached pip window.
+    // Keep the bottom controls bar and leave main-window video hidden — C++ runs
+    // closeDetachedPip(false) after this callback.
+    window._nativeOnPipWindowClosed = function() {
+        window._mpvDetachedPipActive = false;
+    };
+
+    function _pipEnsureIsPlayingOverride() {
+        const pm = window.playbackManager;
+        if (!pm || typeof pm.isPlaying !== 'function' || pm._mpvPipIsPlayingOrig) return;
+        pm._mpvPipIsPlayingOrig = pm.isPlaying.bind(pm);
+        pm.isPlaying = function() {
+            if (window._mpvMiniPlayerActive || window._mpvDetachedPipActive) return false;
+            return pm._mpvPipIsPlayingOrig();
+        };
+    }
+
+    function _pipMaybeRestoreIsPlaying() {
+        if (window._mpvMiniPlayerActive || window._mpvDetachedPipActive) return;
+        const pm = window.playbackManager;
+        if (pm && pm._mpvPipIsPlayingOrig) {
+            pm.isPlaying = pm._mpvPipIsPlayingOrig;
+            delete pm._mpvPipIsPlayingOrig;
+        }
+    }
+
+    // Page/overlay cleanup when entering detached pop-out (home backdrop, no OSD shell).
+    function _enterDetachedPipSetup() {
+        _pipCleanupPage();
+        const pl = window._mpvVideoPlayerInstance;
+        if (pl && pl.setTransparency) pl.setTransparency(0);
+        _pipEnsureIsPlayingOverride();
+        if (pl && pl.appRouter && typeof pl.appRouter.home === 'function') {
+            pl.appRouter.home();
+        }
+    }
+
+    function _removeDetachedControlsBar() {
+        const bar = document.getElementById('jmp-pip-detached-bar');
+        if (!bar) return;
+        _pipUnwireSignals(bar);
+        if (bar.parentNode) bar.parentNode.removeChild(bar);
+        const st = document.getElementById('jmp-pip-detached-style');
+        if (st && st.parentNode) st.parentNode.removeChild(st);
+    }
+
+    // Bottom control bar on the main window while video plays in the pop-out HWND.
+    function _enterDetachedControlsBar() {
+        if (document.getElementById('jmp-pip-detached-bar')) return;
+        const SEEK_H = 20, CONTENT_H = 72;
+        const BAR_H = SEEK_H + CONTENT_H;
+
+        const panel = document.createElement('div');
+        panel.id = 'jmp-pip-detached-bar';
+        panel.style.cssText = [
+            'position:fixed', 'bottom:0', 'left:0', 'right:0', 'height:' + BAR_H + 'px',
+            'background:rgba(10,10,10,0.93)',
+            'border-top:1px solid rgba(255,255,255,0.10)',
+            'z-index:10000', 'display:flex', 'flex-direction:column',
+            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+            'box-sizing:border-box',
+        ].join(';');
+
+        const seekBar = _pipMkSeekBar(panel,
+            'height:' + SEEK_H + 'px;flex-shrink:0;' +
+            'border-bottom:1px solid rgba(255,255,255,0.07);');
+        panel.appendChild(seekBar);
+
+        const contentRow = document.createElement('div');
+        contentRow.style.cssText = 'display:flex;align-items:center;flex:1;min-height:0;padding:0 8px;';
+        panel.appendChild(contentRow);
+
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;padding:0 12px;overflow:hidden;min-width:0;' +
+            'display:flex;flex-direction:column;justify-content:center;gap:3px;';
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'color:#fff;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        const subtitleEl = document.createElement('div');
+        subtitleEl.style.cssText = 'color:rgba(255,255,255,0.70);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        const timeEl = document.createElement('div');
+        timeEl.style.cssText = 'color:rgba(255,255,255,0.45);font-size:11px;white-space:nowrap;';
+        info.appendChild(titleEl); info.appendChild(subtitleEl); info.appendChild(timeEl);
+        contentRow.appendChild(info);
+        _pipPopulateItem(panel, titleEl, subtitleEl);
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'display:flex;align-items:center;gap:0;padding:0 8px;flex-shrink:0;';
+
+        const pauseBtn = _pipMkBtn(playerState.paused ? '\u25B6' : '\u23F8', 'Play/Pause');
+        pauseBtn.id = 'jmp-pip-detached-pause';
+        pauseBtn.style.fontSize = '22px';
+
+        const volWrap = document.createElement('div');
+        volWrap.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px;';
+        const volIcon = document.createElement('span');
+        volIcon.style.cssText = 'color:rgba(255,255,255,0.7);font-size:15px;';
+        volIcon.textContent = '\uD83D\uDD0A';
+        const volSlider = document.createElement('input');
+        volSlider.type = 'range'; volSlider.min = '0'; volSlider.max = '100';
+        volSlider.style.cssText = 'width:64px;height:3px;cursor:pointer;accent-color:#00a4dc;';
+        volSlider.value = String(Math.round(playerState.volume));
+        volSlider.addEventListener('input', () => window.api.player.setVolume(Number(volSlider.value)));
+        volWrap.appendChild(volIcon); volWrap.appendChild(volSlider);
+
+        const expandBtn = _pipMkBtn('\u26F6', 'Restore full player');
+        const stopBtn = _pipMkBtn('\u2715', 'Stop playback');
+        const gearBtn = _pipMkBtn('\u2699', 'PiP mode');
+        gearBtn.style.fontSize = '15px';
+
+        controls.appendChild(pauseBtn);
+        controls.appendChild(volWrap);
+        controls.appendChild(expandBtn);
+        controls.appendChild(stopBtn);
+        controls.appendChild(gearBtn);
+        contentRow.appendChild(controls);
+
+        _pipWireSignals(panel, seekBar._fill, timeEl, 'jmp-pip-detached-pause');
+
+        pauseBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (playerState.paused) window.api.player.play(); else window.api.player.pause();
+        });
+        expandBtn.addEventListener('click', (e) => { e.stopPropagation(); _pipDoExpand(); });
+        stopBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            window._nativeExitMiniPlayer();
+            window.api.player.stop();
+        });
+        gearBtn.addEventListener('click', (e) => { e.stopPropagation(); _showModePicker(gearBtn); });
+
+        if (!document.getElementById('jmp-pip-detached-style')) {
+            const st = document.createElement('style');
+            st.id = 'jmp-pip-detached-style';
+            st.textContent = 'body{padding-bottom:' + BAR_H + 'px!important}';
+            document.head.appendChild(st);
+        }
+
+        document.body.appendChild(panel);
+    }
+
+    window._nativeRefreshDetachedControlsBar = function() {
+        if (!window._mpvDetachedPipActive) return;
+        _removeDetachedControlsBar();
+        _enterDetachedControlsBar();
     };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -659,6 +806,7 @@
             { key: 'bar',     icon: '▬', label: 'Bottom Bar',     desc: 'Full-width bar with live video' },
             { key: 'float',   icon: '⧉', label: 'Floating Panel',  desc: 'Draggable, resizable panel' },
             { key: 'minimal', icon: '⊡', label: 'Minimal Overlay', desc: 'Video only, controls on hover' },
+            { key: 'detach',  icon: '⊟', label: 'Pop-Out Window',  desc: 'Separate always-on-top window' },
         ];
         const cur = localStorage.getItem('jmp_pip_mode') || 'bar';
 
@@ -727,6 +875,17 @@
 
             row.addEventListener('click', () => {
                 if (pop.parentNode) pop.parentNode.removeChild(pop);
+                if (m.key === 'detach') {
+                    // Detached mode: open a separate always-on-top pip window.
+                    if (!window._mpvDetachedPipActive) {
+                        window._nativeExitMiniPlayer();
+                        _enterDetachedPipSetup();
+                        jmpNative.openDetachedPip();
+                        window._mpvDetachedPipActive = true;
+                        _enterDetachedControlsBar();
+                    }
+                    return;
+                }
                 if (m.key === cur) return;
                 localStorage.setItem('jmp_pip_mode', m.key);
                 window._nativeExitMiniPlayer();
@@ -1264,6 +1423,13 @@
     };
 
     window._nativeExitMiniPlayer = function() {
+        _removeDetachedControlsBar();
+        if (window._mpvDetachedPipActive) {
+            jmpNative.closeDetachedPip(true);
+            window._mpvDetachedPipActive = false;
+            window.api.player.setVideoRectangle(0, 0, 0, 0);
+        }
+        _pipMaybeRestoreIsPlaying();
         const panel = document.getElementById('jmp-pip-panel');
         if (!panel) { window._mpvMiniPlayerActive = false; return; }
         _pipUnwireSignals(panel);
@@ -1284,6 +1450,7 @@
     // ── Global PiP hotkeys ────────────────────────────────────────────────────
     // All use Ctrl+Shift to avoid conflicts with normal app or OS shortcuts.
     //   Ctrl+Shift+P     – toggle PiP on/off
+    //   Ctrl+Shift+O     – toggle detached pop-out window
     //   Ctrl+Shift+M     – cycle PiP mode (bar → float → minimal → bar)
     //   Ctrl+Shift+L     – toggle pin lock (float mode)
     //   Ctrl+Shift+C     – cycle corner (float mode)
@@ -1307,6 +1474,19 @@
                     const pl = window._mpvVideoPlayerInstance;
                     if (pl && typeof pl.togglePictureInPicture === 'function') pl.togglePictureInPicture();
                     else window._nativeEnterMiniPlayer();
+                }
+                return;
+            }
+            if (k === 'O' || k === 'o') {
+                e.preventDefault();
+                if (window._mpvDetachedPipActive) {
+                    window._nativeExitMiniPlayer();
+                } else {
+                    window._nativeExitMiniPlayer();
+                    _enterDetachedPipSetup();
+                    jmpNative.openDetachedPip();
+                    window._mpvDetachedPipActive = true;
+                    _enterDetachedControlsBar();
                 }
                 return;
             }
