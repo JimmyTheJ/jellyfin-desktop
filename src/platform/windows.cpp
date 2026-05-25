@@ -9,6 +9,7 @@
 #include "browser/browsers.h"
 #include "browser/web_browser.h"
 #include "browser/overlay_browser.h"
+#include "browser/about_browser.h"
 #include "input/input_windows.h"
 #include "logging.h"
 #include "mpv/event.h"
@@ -207,7 +208,8 @@ static GLenum (APIENTRY* gl_CheckFramebufferStatus_)(GLenum)            = nullpt
 static void win_begin_transition_locked();
 static void win_end_transition_locked();
 static void win_clamp_window_geometry(int* w, int* h, int* x, int* y);
-static void win_close_detached_pip();
+static void win_close_detached_pip(bool restore_main_video);
+static void win_refresh_main_surface_size();
 
 // =====================================================================
 // D3D11 / DXGI / DComp initialization
@@ -1360,7 +1362,7 @@ static LRESULT CALLBACK our_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             g_web_browser->execJs("if(window._nativeOnPipWindowClosed)window._nativeOnPipWindowClosed()");
         // win_close_detached_pip blocks waiting for the render thread ack, so
         // we must not call it on the window message pump thread.
-        std::thread([]() { win_close_detached_pip(); }).detach();
+        std::thread([]() { win_close_detached_pip(false); }).detach();
         return 0;
     }
 
@@ -1561,43 +1563,73 @@ static bool win_init(mpv_handle* /*mpv*/) {
     return true;
 }
 
-static void win_close_detached_pip() {
-    std::lock_guard<std::mutex> op_lock(g_win.pip_op_mtx);
-    if (g_win.pip_phase.load(std::memory_order_acquire) != 1) return;
-
-    // Ask render thread to tear down pip resources and report back
-    std::promise<void> ack;
-    std::future<void>  ack_future = ack.get_future();
-    {
-        std::lock_guard<std::mutex> lock(g_win.surface_mtx);
-        g_win.pip_close_ack = &ack;
-        g_win.pip_phase.store(2, std::memory_order_release);
+// Re-sync mpv/CEF dimensions to the main HWND client area. Called after pip
+// open/close so osd-dimensions from the pip FBO cannot leave CEF at the wrong
+// size or win_present rejecting full-size frames as oversized.
+static void win_refresh_main_surface_size() {
+    if (!g_win.mpv_hwnd) return;
+    RECT cr{};
+    GetClientRect(g_win.mpv_hwnd, &cr);
+    int pw = cr.right, ph = cr.bottom;
+    if (pw <= 0 || ph <= 0) return;
+    float scale = g_win.cached_scale > 0 ? g_win.cached_scale : 1.0f;
+    int lw = static_cast<int>(pw / scale);
+    int lh = static_cast<int>(ph / scale);
+    win_resize(lw, lh, pw, ph);
+    mpv::set_window_pixels(pw, ph);
+    if (g_web_browser && g_web_browser->browser())
+        g_web_browser->resize(lw, lh, pw, ph);
+    if (g_overlay_browser && g_overlay_browser->browser()) {
+        g_overlay_browser->resize(lw, lh, pw, ph);
+        g_platform.overlay_resize(lw, lh, pw, ph);
     }
-    g_win.render_wake.signal();
-    ack_future.wait();
+    if (g_about_browser && g_about_browser->browser()) {
+        g_about_browser->resize(lw, lh, pw, ph);
+        g_platform.about_resize(lw, lh, pw, ph);
+    }
+}
 
-    // Restore the main DComp video visual now that pip is done.
-    {
+static void win_close_detached_pip(bool restore_main_video) {
+    std::lock_guard<std::mutex> op_lock(g_win.pip_op_mtx);
+
+    if (g_win.pip_phase.load(std::memory_order_acquire) == 1) {
+        // Ask render thread to tear down pip resources and report back
+        std::promise<void> ack;
+        std::future<void>  ack_future = ack.get_future();
+        {
+            std::lock_guard<std::mutex> lock(g_win.surface_mtx);
+            g_win.pip_close_ack = &ack;
+            g_win.pip_phase.store(2, std::memory_order_release);
+        }
+        g_win.render_wake.signal();
+        ack_future.wait();
+
+        // pip_phase is now 0; save pip_hwnd then tell the pip thread to exit
+        HWND pip_hwnd = g_win.pip_hwnd;
+        g_win.pip_hwnd = nullptr;
+        g_win.pending_pip_w.store(0, std::memory_order_relaxed);
+        g_win.pending_pip_h.store(0, std::memory_order_relaxed);
+
+        if (pip_hwnd && g_win.pip_window_tid)
+            PostMessageW(pip_hwnd, WM_APP_PIP_DESTROY, 0, 0);
+
+        if (g_win.pip_window_thread.joinable())
+            g_win.pip_window_thread.join();
+
+        g_win.pip_window_tid = 0;
+        win_refresh_main_surface_size();
+    }
+
+    // Reattach the main video layer only when exiting detached mode entirely
+    // (expand/stop). When the user merely closed the pop-out HWND, keep video
+    // hidden so frames do not bleed through the home screen CEF layer.
+    if (restore_main_video) {
         std::lock_guard<std::mutex> lock(g_win.surface_mtx);
         if (g_win.dcomp_video_visual && g_win.dcomp_device && g_win.video_swap_chain) {
             g_win.dcomp_video_visual->SetContent(g_win.video_swap_chain);
             g_win.dcomp_device->Commit();
         }
     }
-
-    // pip_phase is now 0; save pip_hwnd then tell the pip thread to exit
-    HWND pip_hwnd = g_win.pip_hwnd;
-    g_win.pip_hwnd = nullptr;
-    g_win.pending_pip_w.store(0, std::memory_order_relaxed);
-    g_win.pending_pip_h.store(0, std::memory_order_relaxed);
-
-    if (pip_hwnd && g_win.pip_window_tid)
-        PostMessageW(pip_hwnd, WM_APP_PIP_DESTROY, 0, 0);
-
-    if (g_win.pip_window_thread.joinable())
-        g_win.pip_window_thread.join();
-
-    g_win.pip_window_tid = 0;
 }
 
 static void win_open_detached_pip() {
@@ -1633,11 +1665,12 @@ static void win_open_detached_pip() {
     g_win.pending_pip_h.store(kInitH, std::memory_order_relaxed);
     g_win.pip_phase.store(1, std::memory_order_release);
     g_win.render_wake.signal();
+    win_refresh_main_surface_size();
 }
 
 static void win_cleanup() {
     // Tear down pip window first, BEFORE signalling render_stop
-    win_close_detached_pip();
+    win_close_detached_pip(true);
 
     // Stop render thread first (it holds the GL context)
     g_win.render_stop.signal();
@@ -1824,7 +1857,7 @@ Platform make_windows_platform() {
         .store_pip_params = win_store_pip_params,
         .open_detached_pip = win_open_detached_pip,
         .close_detached_pip = win_close_detached_pip,
-        .pip_detached_active = []() { return g_win.pip_phase.load(std::memory_order_relaxed) != 0; },
+        .pip_detached_active = []() { return g_win.pip_phase.load(std::memory_order_relaxed) == 1; },
         .clipboard_read_text_async = win_clipboard_read_text_async,
         .open_external_url = win_open_external_url,
     };

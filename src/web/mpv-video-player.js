@@ -76,7 +76,9 @@
                         this.appRouter.showVideoOsd();
                         if (dlg) dlg.style.zIndex = 'unset';
                     }
-                    window.api.player.setVideoRectangle(0, 0, 0, 0);
+                    if (!window._mpvDetachedPipActive) {
+                        window.api.player.setVideoRectangle(0, 0, 0, 0);
+                    }
                 }
                 if (this._core._paused) {
                     this._core._paused = false;
@@ -142,6 +144,12 @@
                 window._nativeExitMiniPlayer();
                 this._isMiniPlayer = true;
                 window._nativeEnterMiniPlayer();
+            }
+            if (this._pipRefreshDetachedBar) {
+                this._pipRefreshDetachedBar = false;
+                if (window._nativeRefreshDetachedControlsBar) {
+                    window._nativeRefreshDetachedControlsBar();
+                }
             }
             return result;
         }
@@ -234,7 +242,7 @@
         onEndedInternal() {
             // If PiP is active, flag the next createMediaElement call as autoplay so
             // the panel stays alive for the next track instead of being torn down.
-            this._pipAutoplayPending = !!this._isMiniPlayer;
+            this._pipAutoplayPending = !!this._isMiniPlayer || !!window._mpvDetachedPipActive;
             this.events.trigger(this, 'stopped', [{ src: this._currentSrc }]);
             this._core._currentTime = null;
             this._currentSrc = null;
@@ -310,6 +318,16 @@
                     window._nativeExitMiniPlayer();
                     this._isMiniPlayer = false;
                 }
+            }
+            // Pop-out window: keep video in the pip HWND; avoid a full-screen
+            // transparent overlay on the main window (that blanks CEF when sizes drift).
+            if (window._mpvDetachedPipActive) {
+                if (this._pipAutoplayPending) {
+                    this._pipAutoplayPending = false;
+                }
+                this._pipRefreshDetachedBar = true;
+                this._core.connectSignals();
+                return Promise.resolve();
             }
             let dlg = document.querySelector('.videoPlayerContainer');
             if (!dlg) {
@@ -410,7 +428,7 @@
                 if (pm && typeof pm.isPlaying === 'function' && !pm._mpvPipIsPlayingOrig) {
                     pm._mpvPipIsPlayingOrig = pm.isPlaying.bind(pm);
                     pm.isPlaying = function() {
-                        if (window._mpvMiniPlayerActive) return false;
+                        if (window._mpvMiniPlayerActive || window._mpvDetachedPipActive) return false;
                         return pm._mpvPipIsPlayingOrig();
                     };
                 }

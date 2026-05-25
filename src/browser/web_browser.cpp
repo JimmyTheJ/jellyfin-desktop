@@ -345,7 +345,8 @@ bool WebBrowser::handleMessage(const std::string& name,
     } else if (name == "openDetachedPip") {
         if (g_platform.open_detached_pip) g_platform.open_detached_pip();
     } else if (name == "closeDetachedPip") {
-        if (g_platform.close_detached_pip) g_platform.close_detached_pip();
+        bool restore = args->GetSize() < 1 || args->GetBool(0);
+        if (g_platform.close_detached_pip) g_platform.close_detached_pip(restore);
     } else {
         return false;
     }

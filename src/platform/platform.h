@@ -130,9 +130,12 @@ struct Platform {
     // directly to a separate HWND swap chain (bypasses the DComp tree).
     // Windows-only; null on other platforms.
     void (*open_detached_pip)() = nullptr;
-    void (*close_detached_pip)() = nullptr;
+    // restore_main_video: reattach the DComp video layer on the main HWND.
+    // Pass false when the user closed the pop-out window but playback continues
+    // with the detached controls bar (video must stay hidden on the main window).
+    void (*close_detached_pip)(bool restore_main_video) = nullptr;
 
-    // Returns true while a detached pip window is active (pip_phase != 0).
+    // Returns true while a detached pip window is actively rendering (pip_phase == 1).
     // During this time osd-dimensions reflects the pip FBO, not the main window.
     // Windows-only; null (= inactive) on other platforms.
     bool (*pip_detached_active)() = nullptr;
